@@ -175,7 +175,8 @@ function openDrawer(t){
 function source(r){
   $("sourceKind").textContent=r.is_demo?"模拟引文 · 示例研报":"原文溯源";
   $("sourceTitle").textContent=r.report_title;
-  $("sourceMeta").textContent=[r.broker,r.date,r.source_file,r.evidence_page?"PDF 第 "+r.evidence_page+" 页":"页码未记录"].filter(Boolean).join(" · ");
+  const sourceBroker = r.is_demo ? r.broker : r.broker + "研究";
+  $("sourceMeta").textContent=[sourceBroker,r.date,r.source_file,r.evidence_page?"PDF 第 "+r.evidence_page+" 页":"页码未记录"].filter(Boolean).join(" · ");
   $("quote").textContent=r.evidence_quote || "无明确原文证据"; $("evidence").showModal();
 }
 for(const id of ["filters","drawerFilters"]){

@@ -141,15 +141,17 @@ def name_for(title):
     return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", title).strip(" .")[:80]
 
 
-def fetch(drive, folder):
+def fetch(drive, folder, *, archive_only=False):
     target = os.environ.get("NXNY_REPORT_ID", "")
-    if target and not re.fullmatch(r"[0-9]{1,12}", target):
+    if (target or archive_only) and not re.fullmatch(r"[0-9]{1,12}", target):
         raise ValueError("NXNY report ID must be numeric")
     INBOX.mkdir(exist_ok=True)
     known = {r.get("report_id") for r in json.loads((ROOT/"dashboard_data.json").read_text("utf8"))["records"]}
     backups = list_pdfs(drive, folder)
     prior = {r["name"]:r for r in backups}
     by_id = {r["appProperties"]["nxny_id"]:r for r in backups if r.get("appProperties",{}).get("nxny_id")}
+    if archive_only and target not in by_id:
+        raise ValueError("Selected report is absent from the Drive archive")
     limit = 1 if target else int(os.environ.get("MAX_NEW_PDFS") or "4")
     if not 1 <= limit <= 20:
         raise ValueError("MAX_NEW_PDFS must be in 1..20")
@@ -174,7 +176,7 @@ def fetch(drive, folder):
             except Exception as error:
                 failures.append(type(error).__name__)
     reports = []
-    if not target or target not in by_id:
+    if not archive_only and (not target or target not in by_id):
         try:
             response = requests.get(LIST_URL, headers={"User-Agent":"Mozilla/5.0"},timeout=45)
             response.raise_for_status()
@@ -234,9 +236,15 @@ def backup(drive, folder):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["fetch","backup"])
+    parser.add_argument("--archive-only", action="store_true")
     args = parser.parse_args()
+    if args.archive_only and args.action != "fetch":
+        parser.error("--archive-only is only available for fetch")
     try:
-        sys.exit((fetch if args.action=="fetch" else backup)(drive_service(),env("GDRIVE_FOLDER_ID")))
+        drive, folder = drive_service(), env("GDRIVE_FOLDER_ID")
+        if args.action == "fetch":
+            sys.exit(fetch(drive, folder, archive_only=args.archive_only))
+        sys.exit(backup(drive, folder))
     except Exception as error:
         # Remote exceptions can contain signed URLs; log class and stage only.
         print(f"::error::{args.action} failed ({type(error).__name__}). Check configuration and provider status.")
