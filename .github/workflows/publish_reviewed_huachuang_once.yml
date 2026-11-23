@@ -1,94 +1,55 @@
-name: Publish the reviewed Huachuang report
+name: Verify the deployed Huachuang quote dialogs
 on:
   push:
     branches: [main]
     paths: ['.github/workflows/publish_reviewed_huachuang_once.yml']
-permissions: {}
-concurrency:
-  group: bond-cockpit-update
-  cancel-in-progress: false
-
+permissions:
+  contents: read
 jobs:
-  update:
-    if: github.ref_name == github.event.repository.default_branch
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
-    permissions:
-      contents: write
-    outputs:
-      changed: ${{ steps.commit.outputs.changed }}
-    env:
-      BRANCH: ${{ github.event.repository.default_branch }}
-      NXNY_REPORT_ID: '6536940'
+    timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
-      - run: python -m pip install -r requirements.txt
-      - name: Recover the selected original from the private archive
-        env:
-          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
-          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
-        run: python scripts/report_io.py fetch --archive-only
-
-      - name: Install PDF text verifier for selected reports
-        run: python -m pip install 'pypdf>=6,<7'
-
-      - name: Apply the reviewed data and verify both original quotations
-        env:
-          REVIEWED_REPORT_JSON: >-
-            {"broker":"华创证券有限责任公司","report_title":"赎回之后，再看年末抢跑","report_date":"2026-11-23","views":[{"tenor":"1-3Y","stance":"unstated","drivers":[],"target_range":null,"marginal_change":"未明确提及","action":"未明确提及","falsification":"未明确提及","evidence_quote":"","evidence_page":null},{"tenor":"5-7Y","stance":"unstated","drivers":[],"target_range":null,"marginal_change":"未明确提及","action":"未明确提及","falsification":"未明确提及","evidence_quote":"","evidence_page":null},{"tenor":"10Y","stance":"neutral","drivers":[{"factor":"institution","direction":"bearish","note":"年末部分机构或通过出售长债实现浮盈。"}],"target_range":[1.55,1.6],"marginal_change":"收益率接近前低，年末机构止盈需求限制进一步下行。","action":"关注区间震荡及年末机构兑现压力。","falsification":"未明确提及","evidence_quote":"短期内 10y 国债或维持 1.55%–1.60%区间震荡运行。","evidence_page":1},{"tenor":"30Y","stance":"unstated","drivers":[],"target_range":null,"marginal_change":"未明确提及","action":"未明确提及","falsification":"未明确提及","evidence_quote":"","evidence_page":null},{"tenor":"curve","stance":"bullish","drivers":[{"factor":"institution","direction":"bullish","note":"跨年配置需求支持利差收窄，超长端期货相对长端走强。"}],"target_range":null,"marginal_change":"赎回阶段后30Y–10Y国债期限利差回升，报告关注相对利差修复。","action":"关注30Y–10Y国债利差收窄机会。","falsification":"未明确提及","evidence_quote":"近期主力合约 3T-TL 跨品种价差先于现券市场 30-10y 利差压缩，超长端期货相对长端重新走强","evidence_page":10}]}
+      - name: Install browser test tools
         run: |
-          python scripts/extract_bond_reports.py
-          python scripts/verify_selected_report.py
-      - name: Commit only changed dashboard data
-        id: commit
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install chromium
+      - name: Read the deployed dataset and open both evidence dialogs
         run: |
-          set -euo pipefail
-          git add -- dashboard_data.json
-          if git diff --cached --quiet; then echo "Dashboard unchanged"; exit 0; fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Update bond strategy dashboard' -- dashboard_data.json
-          git fetch origin "$BRANCH"
-          if ! git diff --quiet HEAD^ FETCH_HEAD -- dashboard_data.json; then
-            echo "::error::Upstream data changed during extraction. Run again to merge from the latest snapshot."
-            exit 1
-          fi
-          git rebase FETCH_HEAD
-          git push origin "HEAD:refs/heads/$BRANCH"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          import json
+          from urllib.request import urlopen
+          from playwright.sync_api import expect, sync_playwright
 
-  pages:
-    needs: update
-    if: >-
-      always() && !cancelled() && vars.DEPLOY_GITHUB_PAGES == 'true' &&
-      github.ref_name == github.event.repository.default_branch &&
-      needs.update.outputs.changed == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-      - name: Stage only public files
-        run: |
-          mkdir -p "$RUNNER_TEMP/bond-public"
-          cp index.html dashboard_data.json "$RUNNER_TEMP/bond-public/"
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: ${{ runner.temp }}/bond-public
-          retention-days: 1
-      - uses: actions/deploy-pages@v4
-        id: deploy
+          url = "https://superjmjm.github.io/bond-strategy-cockpit/"
+          with urlopen(url + "dashboard_data.json?v=ddfaf97", timeout=30) as response:
+              data = json.load(response)
+          live = [row for row in data["records"] if not row["is_demo"]]
+          assert not data["demo_mode"] and len(live) == 5
+          assert {row["broker"] for row in live} == {"华创证券"}
+          assert {row["report_id"] for row in live} == {"d4387fffa15bd296d8c5a88c67648c03a96096a97d1ae28a5ec377c68041348b"}
+          views = {row["tenor"]: row for row in live}
+          assert views["10Y"]["target_range"] == [1.55, 1.60]
+          with sync_playwright() as pw:
+              browser = pw.chromium.launch()
+              page = browser.new_page()
+              page.goto(url + "?v=ddfaf97-ui", wait_until="domcontentloaded", timeout=30000)
+              expect(page.get_by_text("研报数据", exact=True)).to_be_visible(timeout=20000)
+              for tenor, physical_page in [("10Y", 1), ("curve", 10)]:
+                  page.locator(f'tr[data-tenor="{tenor}"] button.open-tenor').first.click()
+                  drawer = page.locator("#drawer")
+                  expect(drawer).to_be_visible()
+                  drawer.get_by_role("button", name="查看原文证据", exact=True).click()
+                  modal = page.locator("#evidence")
+                  expect(modal).to_be_visible()
+                  expect(modal.locator("#sourceMeta")).to_contain_text("华创证券研究")
+                  expect(modal.locator("#sourceMeta")).to_contain_text(f"PDF 第 {physical_page} 页")
+                  expect(modal.locator("#quote")).to_have_text(views[tenor]["evidence_quote"])
+                  modal.get_by_role("button", name="关闭原文", exact=True).click()
+                  drawer.locator('button[data-close="drawer"]').click()
+                  print(f"{tenor} short quotation dialog verified at PDF page {physical_page}")
+              browser.close()
+          PY
