@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "demo_mode": true,
-  "updated_at": "2026-11-20T08:30:00+08:00",
+  "demo_mode": false,
+  "updated_at": "2026-11-23T21:09:53+08:00",
   "benchmark_yields": {
     "1-3Y": 1.52,
     "5-7Y": 1.88,
@@ -12,6 +12,121 @@
   "broker_aliases": {},
   "broker_styles": {},
   "records": [
+    {
+      "report_id": "d4387fffa15bd296d8c5a88c67648c03a96096a97d1ae28a5ec377c68041348b",
+      "source_file": "6536940-华创证券-债券周报：赎回之后，再看年末抢跑-261123.pdf",
+      "broker": "华创证券",
+      "style": "未标注",
+      "date": "2026-11-23",
+      "report_title": "赎回之后，再看年末抢跑",
+      "is_demo": false,
+      "tenor": "curve",
+      "stance": "bullish",
+      "marginal_change": "赎回阶段后30Y–10Y国债期限利差回升，报告关注相对利差修复。",
+      "drivers": [
+        {
+          "factor": "institution",
+          "direction": "bullish",
+          "note": "跨年配置需求支持利差收窄，超长端期货相对长端走强。"
+        }
+      ],
+      "target_range": null,
+      "action": "关注30Y–10Y国债利差收窄机会。",
+      "falsification": "未明确提及",
+      "evidence_quote": "近期主力合约 3T-TL 跨品种价差先于现券市场 30-10y 利差压缩，超长端期货相对长端重新走强",
+      "evidence_page": 10,
+      "prev_stance": "unstated",
+      "stance_delta": "new"
+    },
+    {
+      "report_id": "d4387fffa15bd296d8c5a88c67648c03a96096a97d1ae28a5ec377c68041348b",
+      "source_file": "6536940-华创证券-债券周报：赎回之后，再看年末抢跑-261123.pdf",
+      "broker": "华创证券",
+      "style": "未标注",
+      "date": "2026-11-23",
+      "report_title": "赎回之后，再看年末抢跑",
+      "is_demo": false,
+      "tenor": "5-7Y",
+      "stance": "unstated",
+      "marginal_change": "未明确提及",
+      "drivers": [],
+      "target_range": null,
+      "action": "未明确提及",
+      "falsification": "未明确提及",
+      "evidence_quote": "",
+      "evidence_page": null,
+      "prev_stance": "unstated",
+      "stance_delta": "unstated"
+    },
+    {
+      "report_id": "d4387fffa15bd296d8c5a88c67648c03a96096a97d1ae28a5ec377c68041348b",
+      "source_file": "6536940-华创证券-债券周报：赎回之后，再看年末抢跑-261123.pdf",
+      "broker": "华创证券",
+      "style": "未标注",
+      "date": "2026-11-23",
+      "report_title": "赎回之后，再看年末抢跑",
+      "is_demo": false,
+      "tenor": "30Y",
+      "stance": "unstated",
+      "marginal_change": "未明确提及",
+      "drivers": [],
+      "target_range": null,
+      "action": "未明确提及",
+      "falsification": "未明确提及",
+      "evidence_quote": "",
+      "evidence_page": null,
+      "prev_stance": "unstated",
+      "stance_delta": "unstated"
+    },
+    {
+      "report_id": "d4387fffa15bd296d8c5a88c67648c03a96096a97d1ae28a5ec377c68041348b",
+      "source_file": "6536940-华创证券-债券周报：赎回之后，再看年末抢跑-261123.pdf",
+      "broker": "华创证券",
+      "style": "未标注",
+      "date": "2026-11-23",
+      "report_title": "赎回之后，再看年末抢跑",
+      "is_demo": false,
+      "tenor": "10Y",
+      "stance": "neutral",
+      "marginal_change": "收益率接近前低，年末机构止盈需求限制进一步下行。",
+      "drivers": [
+        {
+          "factor": "institution",
+          "direction": "bearish",
+          "note": "年末部分机构或通过出售长债实现浮盈。"
+        }
+      ],
+      "target_range": [
+        1.55,
+        1.6
+      ],
+      "action": "关注区间震荡及年末机构兑现压力。",
+      "falsification": "未明确提及",
+      "evidence_quote": "短期内 10y 国债或维持 1.55%–1.60%区间震荡运行。",
+      "evidence_page": 1,
+      "prev_stance": "unstated",
+      "stance_delta": "new"
+    },
+    {
+      "report_id": "d4387fffa15bd296d8c5a88c67648c03a96096a97d1ae28a5ec377c68041348b",
+      "source_file": "6536940-华创证券-债券周报：赎回之后，再看年末抢跑-261123.pdf",
+      "broker": "华创证券",
+      "style": "未标注",
+      "date": "2026-11-23",
+      "report_title": "赎回之后，再看年末抢跑",
+      "is_demo": false,
+      "tenor": "1-3Y",
+      "stance": "unstated",
+      "marginal_change": "未明确提及",
+      "drivers": [],
+      "target_range": null,
+      "action": "未明确提及",
+      "falsification": "未明确提及",
+      "evidence_quote": "",
+      "evidence_page": null,
+      "prev_stance": "unstated",
+      "stance_delta": "unstated"
+    },
     {
       "tenor": "curve",
       "stance": "bullish",
@@ -1293,46 +1408,5 @@
       "stance_delta": "unstated"
     }
   ],
-  "radar_alerts": [
-    {
-      "date": "2026-11-18",
-      "broker": "中信固收",
-      "tenor": "curve",
-      "from": "neutral",
-      "to": "bullish",
-      "delta": "upgrade",
-      "reason": "短端受益流动性宽松，超长端受供给扰动，30Y-10Y走陡空间打开",
-      "report_id": "demo-4-1"
-    },
-    {
-      "date": "2026-11-18",
-      "broker": "中金固收",
-      "tenor": "1-3Y",
-      "from": "neutral",
-      "to": "bullish",
-      "delta": "upgrade",
-      "reason": "央行逆回购净投放超预期，存单利率下行打开短端空间",
-      "report_id": "demo-1-1"
-    },
-    {
-      "date": "2026-11-18",
-      "broker": "华泰固收",
-      "tenor": "30Y",
-      "from": "bullish",
-      "to": "cautious",
-      "delta": "downgrade",
-      "reason": "地方债供给放量叠加权益成交放大，超长端赔率压缩",
-      "report_id": "demo-0-1"
-    },
-    {
-      "date": "2026-11-17",
-      "broker": "天风固收",
-      "tenor": "10Y",
-      "from": "neutral",
-      "to": "cautious",
-      "delta": "downgrade",
-      "reason": "降息预期延后，10Y接近前低位置止盈盘增加",
-      "report_id": "demo-2-1"
-    }
-  ]
+  "radar_alerts": []
 }
