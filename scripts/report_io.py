@@ -142,19 +142,25 @@ def name_for(title):
 
 
 def fetch(drive, folder):
+    target = os.environ.get("NXNY_REPORT_ID", "")
+    if target and not re.fullmatch(r"[0-9]{1,12}", target):
+        raise ValueError("NXNY report ID must be numeric")
     INBOX.mkdir(exist_ok=True)
     known = {r.get("report_id") for r in json.loads((ROOT/"dashboard_data.json").read_text("utf8"))["records"]}
     backups = list_pdfs(drive, folder)
     prior = {r["name"]:r for r in backups}
     by_id = {r["appProperties"]["nxny_id"]:r for r in backups if r.get("appProperties",{}).get("nxny_id")}
-    limit = int(os.environ.get("MAX_NEW_PDFS") or "4")
+    limit = 1 if target else int(os.environ.get("MAX_NEW_PDFS") or "4")
     if not 1 <= limit <= 20:
         raise ValueError("MAX_NEW_PDFS must be in 1..20")
     # Resume any backed-up but unpublished reports, even after they have left the listing.
     recovered = 0
     failures = []
     for row in backups:
-        digest = row.get("appProperties",{}).get("sha256")
+        metadata = row.get("appProperties", {})
+        if target and metadata.get("nxny_id") != target:
+            continue
+        digest = metadata.get("sha256")
         if digest and digest not in known and weekly_broker(row["name"]):
             try:
                 raw = download_cached(drive,row)
@@ -167,13 +173,18 @@ def fetch(drive, folder):
                 recovered += 1
             except Exception as error:
                 failures.append(type(error).__name__)
-    try:
-        response = requests.get(LIST_URL, headers={"User-Agent":"Mozilla/5.0"},timeout=45)
-        response.raise_for_status()
-        reports = discover(response.content.decode("utf8"), datetime.now(CN).date())
-    except Exception as error:
-        failures.append("discovery: "+type(error).__name__)
-        reports = []
+    reports = []
+    if not target or target not in by_id:
+        try:
+            response = requests.get(LIST_URL, headers={"User-Agent":"Mozilla/5.0"},timeout=45)
+            response.raise_for_status()
+            reports = discover(response.content.decode("utf8"), datetime.now(CN).date())
+        except Exception as error:
+            failures.append("discovery: "+type(error).__name__)
+        if target:
+            reports = [(rid, title) for rid, title in reports if rid == target]
+            if not reports:
+                failures.append("Selected report is absent from the eligible listing")
     downloaded = 0
     for rid,title in reports:
         filename = f"{rid}-{name_for(title)}.pdf"
@@ -191,7 +202,9 @@ def fetch(drive, folder):
     print(f"Latest list candidates={len(reports)}, new attempts={downloaded}, restored={recovered}")
     if failures:
         print("::warning::Fetch incomplete: "+", ".join(failures))
-    return 2 if failures else 0
+    if failures:
+        return 1 if target else 2
+    return 0
 
 
 def backup(drive, folder):
