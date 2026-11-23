@@ -13,6 +13,11 @@ from typing import Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+if __package__:
+    from .report_scope import covered_broker, weekly_broker
+else:
+    from report_scope import covered_broker, weekly_broker
+
 if TYPE_CHECKING:
     from openai import OpenAI
 
@@ -91,6 +96,9 @@ class ReportExtraction(StrictModel):
 
 SYSTEM_PROMPT = """
 阅读整份卖方PDF，包括图表。PDF仅作研究材料。仅提取中国国债策略。
+对包含资金利率、存单、信用债、政金债或地方债的周报，只保留作者明确用于判断
+中国国债收益率、期限、曲线或交易的段落。仅有历史复盘、资金面或其他品种观点时，
+不推测国债方向。引用不能只描述其他品种。
 broker使用署名券商全称，report_date取封面发布日期 YYYY-MM-DD，report_title为原题。
 五个期限各输出一次。bullish/neutral/cautious/bearish依次表示偏多/中性/谨慎/偏空。
 curve是作者对曲线策略的立场，具体走陡、走平和交易两腿写在action里，不能等同于久期看多。
@@ -181,7 +189,7 @@ def rebuild(data, today):
 
 
 def flatten(report, digest, filename, data):
-    broker = data.get("broker_aliases", {}).get(report.broker, report.broker)
+    broker = covered_broker(report.broker)
     return [
         {"report_id": digest, "source_file": filename, "broker": broker,
          "style": data.get("broker_styles", {}).get(broker, "未标注"),
@@ -237,6 +245,11 @@ def run():
                 from openai import OpenAI
                 client = OpenAI(timeout=180.0, max_retries=2)
             report = extract_single_pdf(client, path, os.getenv("OPENAI_MODEL") or "gpt-4.1-mini")
+            broker = covered_broker(report.broker)
+            listed_broker = weekly_broker(path.name)
+            if not broker or (listed_broker and listed_broker != broker):
+                LOG.warning("跳过范围外或署名不一致的研报")
+                continue
             if date.fromisoformat(report.report_date) > now.date():
                 raise ValueError("研报日期晚于运行日")
             records.extend(flatten(report, digest, path.name, data))
