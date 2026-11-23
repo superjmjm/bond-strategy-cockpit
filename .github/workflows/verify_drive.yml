@@ -1,0 +1,100 @@
+name: Verify Google Drive backup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: verify-cockpit-drive
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Prepare archive folder and confirm write/read
+        env:
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import io
+          import os
+
+          from googleapiclient.http import MediaIoBaseUpload
+          from scripts.report_io import drive_service
+
+          FOLDER_NAME = "Bond Strategy Cockpit PDF Archive"
+          FOLDER_MIME = "application/vnd.google-apps.folder"
+          ARCHIVE_MARKER = {"bond_strategy_cockpit": "archive-v1"}
+
+          def verify():
+              drive = drive_service()
+              files = drive.files()
+              folder_id = os.environ.get("GDRIVE_FOLDER_ID", "").strip()
+              if not folder_id:
+                  matches = files.list(
+                      q=f"trashed=false and mimeType='{FOLDER_MIME}' and "
+                        "appProperties has { key='bond_strategy_cockpit' and value='archive-v1' }",
+                      pageSize=100,
+                      fields="nextPageToken,files(id)",
+                  ).execute()
+                  folders = matches.get("files", [])
+                  if len(folders) > 1 or matches.get("nextPageToken"):
+                      raise ValueError("ArchiveFolderNotUnique")
+                  if folders:
+                      folder_id = folders[0]["id"]
+                      print("archive_folder=reused")
+                  else:
+                      folder_id = files.create(
+                          body={"name": FOLDER_NAME, "mimeType": FOLDER_MIME, "appProperties": ARCHIVE_MARKER},
+                          fields="id",
+                      ).execute()["id"]
+                      print("archive_folder=created")
+
+              folder = files.get(
+                  fileId=folder_id, fields="mimeType,trashed,capabilities(canAddChildren)",
+                  supportsAllDrives=True,
+              ).execute()
+              if folder["mimeType"] != FOLDER_MIME or folder["trashed"] or not folder["capabilities"]["canAddChildren"]:
+                  raise ValueError("ArchiveFolderNotWritable")
+              print("archive_folder_writeable=confirmed")
+
+              payload = f"Bond Strategy Cockpit Drive write check {os.environ['GITHUB_RUN_ID']}\n".encode()
+              probe = files.create(
+                  body={"name": "bond-cockpit-drive-check.txt", "parents": [folder_id]},
+                  media_body=MediaIoBaseUpload(io.BytesIO(payload), mimetype="text/plain"),
+                  fields="id,md5Checksum", supportsAllDrives=True,
+              ).execute()
+              try:
+                  if probe.get("md5Checksum") != hashlib.md5(payload).hexdigest():
+                      raise ValueError("UploadChecksumMismatch")
+                  if files.get_media(fileId=probe["id"], supportsAllDrives=True).execute() != payload:
+                      raise ValueError("ReadbackMismatch")
+                  print("write_and_readback=passed")
+              finally:
+                  cleared = files.update(
+                      fileId=probe["id"], body={"trashed": True}, fields="trashed", supportsAllDrives=True,
+                  ).execute()
+                  if not cleared.get("trashed"):
+                      raise ValueError("TestFileTrashNotConfirmed")
+                  print("test_file_cleanup=passed")
+
+          try:
+              verify()
+          except Exception as error:
+              print(f"drive_check=failed error={type(error).__name__} status={getattr(getattr(error, 'resp', None), 'status', '-')}")
+              raise SystemExit(1)
+          print("drive_check=passed")
+          PY
