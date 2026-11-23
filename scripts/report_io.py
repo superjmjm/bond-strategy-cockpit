@@ -13,12 +13,15 @@ from pathlib import Path
 
 import requests
 
+if __package__:
+    from .report_scope import weekly_broker
+else:
+    from report_scope import weekly_broker
+
 ROOT = Path(__file__).resolve().parents[1]
 INBOX = ROOT / "reports_inbox"
 LIST_URL = "https://www.nxny.com/stype_qh/"
 MAX_BYTES = 48_000_000
-EXCLUDED = ("科创", "信用", "转债", "REIT", "美债", "华源证券", "华福证券", "西部证券",
-            "万联证券", "开源证券", "国投证券", "国盛证券")
 CN = timezone(timedelta(hours=8))
 
 
@@ -83,7 +86,7 @@ def discover(body, today):
     if not items:
         raise ValueError("NXNY list unavailable or structure changed")
     return [(rid,title) for rid,(title,day) in items.items()
-            if today-timedelta(days=7) <= day <= today and not any(x in title.upper() for x in EXCLUDED)]
+            if today-timedelta(days=7) <= day <= today and weekly_broker(title)]
 
 
 def fetch_nxny(rid):
@@ -152,7 +155,7 @@ def fetch(drive, folder):
     failures = []
     for row in backups:
         digest = row.get("appProperties",{}).get("sha256")
-        if digest and digest not in known:
+        if digest and digest not in known and weekly_broker(row["name"]):
             try:
                 raw = download_cached(drive,row)
                 if hashlib.sha256(raw).hexdigest() != digest:
