@@ -10,6 +10,9 @@ on:
       report_id:
         description: Optional NXNY report ID for single-report validation
         type: string
+      reviewed_extraction:
+        description: Optional reviewed JSON for a report already archived in Drive
+        type: string
   push:
     paths: [index.html, dashboard_data.json]
   schedule:
@@ -22,8 +25,12 @@ concurrency:
 jobs:
   update:
     if: >-
-      vars.ENABLE_REPORT_PIPELINE == 'true' &&
+      (vars.ENABLE_REPORT_PIPELINE == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.trigger_source == 'manual' &&
+      inputs.report_id != '' && inputs.reviewed_extraction != '')) &&
       github.event_name != 'push' && github.ref_name == github.event.repository.default_branch &&
+      (inputs.reviewed_extraction == '' || (github.event_name == 'workflow_dispatch' &&
+      inputs.trigger_source == 'manual' && inputs.report_id != '')) &&
       (github.event_name != 'schedule' || vars.SCHEDULER == 'github') &&
       (inputs.trigger_source != 'cloudflare' || (vars.SCHEDULER == 'cloudflare' && !inputs.report_id))
     runs-on: ubuntu-latest
@@ -52,8 +59,11 @@ jobs:
           FOLDER: ${{ vars.GDRIVE_FOLDER_ID }}
           BROWSER_KEY: ${{ secrets.TINYFISH_API_KEY }}
           PROFILE: ${{ secrets.TINYFISH_PROFILE_ID }}
+          HAS_REVIEWED_EXTRACTION: ${{ inputs.reviewed_extraction != '' }}
         run: |
-          for key in MODEL_KEY DRIVE FOLDER BROWSER_KEY PROFILE; do
+          keys=(DRIVE FOLDER)
+          if [[ "$HAS_REVIEWED_EXTRACTION" != "true" ]]; then keys+=(MODEL_KEY BROWSER_KEY PROFILE); fi
+          for key in "${keys[@]}"; do
             if [[ -z "${!key}" ]]; then echo "::error::Missing configuration $key"; exit 1; fi
           done
 
@@ -66,14 +76,18 @@ jobs:
           TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
           TINYFISH_PROFILE_ID: ${{ secrets.TINYFISH_PROFILE_ID }}
           MAX_NEW_PDFS: ${{ vars.MAX_NEW_PDFS || '1' }}
+          HAS_REVIEWED_EXTRACTION: ${{ inputs.reviewed_extraction != '' }}
         run: |
           rc=0
-          python scripts/report_io.py fetch || rc=$?
+          args=()
+          if [[ "$HAS_REVIEWED_EXTRACTION" == "true" ]]; then args+=(--archive-only); fi
+          python scripts/report_io.py fetch "${args[@]}" || rc=$?
           echo "code=$rc" >> "$GITHUB_OUTPUT"
           if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
 
       # Step 2 按文件摘要备份 PDF，回读上传回执的 MD5 后才继续。此处可换为既有备份脚本。
       - name: Back up PDFs to Google Drive
+        if: inputs.reviewed_extraction == ''
         env:
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
@@ -88,6 +102,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
+          REVIEWED_REPORT_JSON: ${{ inputs.reviewed_extraction }}
         run: |
           rc=0
           python scripts/extract_bond_reports.py || rc=$?
