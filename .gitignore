@@ -1,0 +1,9 @@
+reports_inbox/*
+!reports_inbox/.gitkeep
+__pycache__/
+*.pyc
+.venv/
+.env*
+.dev.vars*
+.wrangler/
+node_modules/

@@ -1,0 +1,139 @@
+name: Update bond cockpit
+on:
+  workflow_dispatch:
+    inputs:
+      trigger_source:
+        description: Dispatch origin
+        type: choice
+        options: [manual, cloudflare]
+        default: manual
+  push:
+    paths: [index.html, dashboard_data.json]
+  schedule:
+    - cron: '17 0 * * *' # 北京时间 08:17
+permissions: {}
+concurrency:
+  group: bond-cockpit-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: >-
+      vars.ENABLE_REPORT_PIPELINE == 'true' &&
+      github.event_name != 'push' && github.ref_name == github.event.repository.default_branch &&
+      (github.event_name != 'schedule' || vars.SCHEDULER == 'github') &&
+      (inputs.trigger_source != 'cloudflare' || vars.SCHEDULER == 'cloudflare')
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+    env:
+      BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Check configuration before downloading
+        env:
+          MODEL_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DRIVE: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          FOLDER: ${{ vars.GDRIVE_FOLDER_ID }}
+          BROWSER_KEY: ${{ secrets.TINYFISH_API_KEY }}
+          PROFILE: ${{ secrets.TINYFISH_PROFILE_ID }}
+        run: |
+          for key in MODEL_KEY DRIVE FOLDER BROWSER_KEY PROFILE; do
+            if [[ -z "${!key}" ]]; then echo "::error::Missing configuration $key"; exit 1; fi
+          done
+
+      # Step 1 拉取最新研报。可把此步骤替换为现有采集脚本，PDF 放入 reports_inbox/。
+      - name: Fetch NXNY reports and recover unpublished backups
+        id: fetch
+        env:
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+          TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
+          TINYFISH_PROFILE_ID: ${{ secrets.TINYFISH_PROFILE_ID }}
+          MAX_NEW_PDFS: ${{ vars.MAX_NEW_PDFS || '1' }}
+        run: |
+          rc=0
+          python scripts/report_io.py fetch || rc=$?
+          echo "code=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
+
+      # Step 2 按文件摘要备份 PDF，回读上传回执的 MD5 后才继续。此处可换为既有备份脚本。
+      - name: Back up PDFs to Google Drive
+        env:
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+        run: python scripts/report_io.py backup
+
+      - name: Extract PDF and merge history
+        id: extract
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
+        run: |
+          rc=0
+          python scripts/extract_bond_reports.py || rc=$?
+          echo "code=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
+      - name: Commit only changed dashboard data
+        id: commit
+        run: |
+          set -euo pipefail
+          git add -- dashboard_data.json
+          if git diff --cached --quiet; then echo "Dashboard unchanged"; exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Update bond strategy dashboard' -- dashboard_data.json
+          git fetch origin "$BRANCH"
+          if ! git diff --quiet HEAD^ FETCH_HEAD -- dashboard_data.json; then
+            echo "::error::Upstream data changed during extraction. Run again to merge from the latest snapshot."
+            exit 1
+          fi
+          git rebase FETCH_HEAD
+          git push origin "HEAD:refs/heads/$BRANCH"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Report incomplete batch after publishing successes
+        if: steps.fetch.outputs.code == '2' || steps.extract.outputs.code == '2'
+        run: |
+          echo "::error::Partial batch. Successful records are committed. Failed PDFs can be retried."
+          exit 1
+
+  pages:
+    needs: update
+    if: >-
+      always() && !cancelled() && vars.DEPLOY_GITHUB_PAGES == 'true' &&
+      github.ref_name == github.event.repository.default_branch &&
+      (github.event_name == 'push' || needs.update.outputs.changed == 'true' ||
+      (github.event_name == 'workflow_dispatch' && needs.update.result == 'success'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Stage only public files
+        run: |
+          mkdir -p "$RUNNER_TEMP/bond-public"
+          cp index.html dashboard_data.json "$RUNNER_TEMP/bond-public/"
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/bond-public
+          retention-days: 1
+      - uses: actions/deploy-pages@v4
+        id: deploy

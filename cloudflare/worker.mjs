@@ -1,0 +1,28 @@
+export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(dispatch(env, event.scheduledTime));
+  },
+  fetch() {
+    return new Response("Scheduled dispatcher", { status: 404 });
+  }
+};
+
+export async function dispatch(env, scheduledTime) {
+  if (env.SCHEDULER_ENABLED !== "true") return;
+  const { GITHUB_OWNER, GITHUB_REPO, GITHUB_REF, GITHUB_TOKEN } = env;
+  if (![GITHUB_OWNER, GITHUB_REPO, GITHUB_REF, GITHUB_TOKEN].every(Boolean)) {
+    throw new Error("Missing GitHub dispatcher configuration");
+  }
+  const repository = [GITHUB_OWNER, GITHUB_REPO].map(encodeURIComponent).join("/");
+  const url = "https://api.github.com/repos/" + repository + "/actions/workflows/update_dashboard.yml/dispatches";
+  const response = await fetch(url, {
+    method: "POST", redirect: "error", signal: AbortSignal.timeout(20000),
+    headers: { Authorization: "Bearer " + GITHUB_TOKEN, Accept: "application/vnd.github+json",
+               "Content-Type": "application/json", "User-Agent": "rates-cockpit-scheduler",
+               "X-GitHub-Api-Version": "2022-11-28" },
+    body: JSON.stringify({ ref: GITHUB_REF, inputs: { trigger_source: "cloudflare" } })
+  });
+  if (!response.ok) throw new Error("Workflow dispatch HTTP " + response.status);
+  console.log(JSON.stringify({ event: "dispatch_accepted", scheduledTime, status: response.status,
+                               github_request_id: response.headers.get("x-github-request-id") }));
+}

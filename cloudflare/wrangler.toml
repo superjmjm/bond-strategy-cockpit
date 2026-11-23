@@ -1,0 +1,13 @@
+name = "rates-cockpit-dispatch"
+main = "worker.mjs"
+compatibility_date = "2026-01-01"
+workers_dev = false
+
+[triggers]
+crons = ["17 0 * * *"]
+
+[vars]
+GITHUB_OWNER = "YOUR_GITHUB_OWNER"
+GITHUB_REPO = "YOUR_PUBLIC_REPO"
+GITHUB_REF = "main"
+SCHEDULER_ENABLED = "false"
