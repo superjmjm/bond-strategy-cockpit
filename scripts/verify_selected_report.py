@@ -23,13 +23,23 @@ def normalized(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).replace("\u00ad", "")
 
 
-def citation_text(path):
-    """Read the same physical page text the verifier will compare."""
-    reader = PdfReader(path)
-    return "\n\n".join(
-        f"【PDF 物理页 {index}】\n{page.extract_text()}"
-        for index, page in enumerate(reader.pages, start=1)
-    )
+def citation_spans(path):
+    """Index exact, contiguous source phrases with their physical page numbers."""
+    spans = {}
+    for page, sheet in enumerate(PdfReader(path).pages, start=1):
+        text = re.sub(r"\s+", " ", sheet.extract_text()).strip()
+        index = 0
+        for sentence in re.findall(r"[^。！？；]+[。！？；]?", text):
+            phrases = [sentence]
+            if len(normalized(sentence)) > 100:
+                phrases = re.findall(r"[^，、]+[，、]?", sentence)
+            for phrase in phrases:
+                for start in range(0, len(phrase), 100):
+                    quote = phrase[start:start + 100].strip()
+                    if len(normalized(quote)) >= 6:
+                        index += 1
+                        spans[f"P{page}S{index}"] = (page, quote)
+    return spans
 
 
 def verify(target, inbox, data):
