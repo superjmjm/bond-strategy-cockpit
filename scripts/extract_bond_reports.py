@@ -255,7 +255,13 @@ def run():
     success = failed = 0
     now = datetime.now(CN)
     target = os.getenv("NXNY_REPORT_ID")
-    if target:
+    reviewed_json = os.getenv("REVIEWED_REPORT_JSON")
+    reviewed = None
+    if reviewed_json:
+        if not target or len(files) != 1:
+            raise ValueError("已复核结果必须对应一个指定 PDF")
+        reviewed = ReportExtraction.model_validate_json(reviewed_json)
+    elif target:
         if __package__:
             from .verify_selected_report import citation_spans
         else:
@@ -268,13 +274,16 @@ def run():
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
             if digest in seen:
                 continue
-            if client is None:
-                from openai import OpenAI
-                client = OpenAI(timeout=180.0, max_retries=2)
-            citations = citation_spans(path) if target else None
-            report = extract_single_pdf(
-                client, path, os.getenv("OPENAI_MODEL") or "gpt-4.1-mini", citations=citations
-            )
+            if reviewed is not None:
+                report = reviewed
+            else:
+                if client is None:
+                    from openai import OpenAI
+                    client = OpenAI(timeout=180.0, max_retries=2)
+                citations = citation_spans(path) if target else None
+                report = extract_single_pdf(
+                    client, path, os.getenv("OPENAI_MODEL") or "gpt-4.1-mini", citations=citations
+                )
             broker = covered_broker(report.broker)
             listed_broker = weekly_broker(path.name)
             if not broker or (listed_broker and listed_broker != broker):
