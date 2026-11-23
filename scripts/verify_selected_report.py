@@ -23,6 +23,15 @@ def normalized(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).replace("\u00ad", "")
 
 
+def citation_text(path):
+    """Read the same physical page text the verifier will compare."""
+    reader = PdfReader(path)
+    return "\n\n".join(
+        f"【PDF 物理页 {index}】\n{page.extract_text()}"
+        for index, page in enumerate(reader.pages, start=1)
+    )
+
+
 def verify(target, inbox, data):
     if not re.fullmatch(r"[0-9]{1,12}", target):
         raise ValueError("Invalid selected report ID")
