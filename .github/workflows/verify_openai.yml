@@ -1,0 +1,106 @@
+name: Verify OpenAI PDF extraction
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: verify-openai-pdf
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install extraction dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify one synthetic PDF
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
+        run: |
+          python - <<'PY'
+          import logging
+          import os
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from types import SimpleNamespace
+
+          from openai import OpenAI
+          from scripts.extract_bond_reports import extract_single_pdf
+
+          def make_pdf():
+              stream = (
+                  b"BT /F1 12 Tf 42 735 Td (Synthetic Research Securities) Tj "
+                  b"0 -20 Td (China Treasury Strategy - Synthetic Test) Tj "
+                  b"0 -20 Td (2026-11-20) Tj "
+                  b"0 -20 Td (We are bullish on 10-year Chinese government bonds.) Tj ET"
+              )
+              objects = [
+                  b"<< /Type /Catalog /Pages 2 0 R >>",
+                  b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                  b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                  b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+                  b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+                  f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream",
+              ]
+              pdf = bytearray(b"%PDF-1.4\n")
+              offsets = [0]
+              for number, obj in enumerate(objects, 1):
+                  offsets.append(len(pdf))
+                  pdf.extend(f"{number} 0 obj\n".encode() + obj + b"\nendobj\n")
+              xref = len(pdf)
+              pdf.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
+              for offset in offsets[1:]:
+                  pdf.extend(f"{offset:010} 00000 n \n".encode())
+              pdf.extend(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+              return bytes(pdf)
+
+          if not os.environ.get("OPENAI_API_KEY", "").strip():
+              print("configuration=missing_openai_secret")
+              raise SystemExit(1)
+
+          logging.disable(logging.CRITICAL)
+          stage = "file_upload"
+          deleted = False
+          ok = False
+          client = OpenAI(timeout=60, max_retries=0)
+
+          def upload(**kwargs):
+              global stage
+              file = client.files.create(**kwargs)
+              print("file_upload=success")
+              stage = "structured_extraction"
+              return file
+
+          def delete(file_id):
+              global deleted
+              try:
+                  deleted = client.files.delete(file_id).deleted
+                  print(f"file_cleanup={'success' if deleted else 'not_confirmed'}")
+              except Exception as error:
+                  print(f"file_cleanup=failed error={type(error).__name__} status={getattr(error, 'status_code', '-')}")
+
+          probe = SimpleNamespace(files=SimpleNamespace(create=upload, delete=delete), responses=client.responses)
+          try:
+              with TemporaryDirectory() as directory:
+                  pdf = Path(directory) / "synthetic-bond-probe.pdf"
+                  pdf.write_bytes(make_pdf())
+                  report = extract_single_pdf(probe, pdf, os.environ["OPENAI_MODEL"])
+              print(f"structured_extraction=success tenors={len(report.views)}")
+              ok = deleted
+          except Exception as error:
+              print(f"check_failed stage={stage} error={type(error).__name__} status={getattr(error, 'status_code', '-')}")
+
+          print(f"result={'passed' if ok else 'failed'}")
+          raise SystemExit(0 if ok else 1)
+          PY
