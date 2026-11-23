@@ -1,0 +1,97 @@
+name: Verify TinyFish NXNY login
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: verify-tinyfish-nxny
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install browser client
+        run: python -m pip install 'requests>=2.32.5,<3' 'playwright>=1.55,<2'
+      - name: Check profile access and NXNY login
+        env:
+          TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
+          TINYFISH_PROFILE_ID: ${{ secrets.TINYFISH_PROFILE_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from urllib.parse import urlsplit
+
+          import requests
+          from playwright.sync_api import sync_playwright
+
+          def verify():
+              key = os.environ.get("TINYFISH_API_KEY", "").strip()
+              profile = os.environ.get("TINYFISH_PROFILE_ID", "").strip()
+              if not key or not re.fullmatch(r"[A-Za-z0-9_-]+", profile):
+                  print("configuration=missing_or_invalid")
+                  return False
+
+              endpoint = f"https://agent.tinyfish.ai/v1/profiles/{profile}"
+              auth = {"X-API-Key": key}
+              response = requests.get(endpoint, headers=auth, timeout=20, allow_redirects=False)
+              print(f"profile_http={response.status_code}")
+              if response.status_code != 200:
+                  return False
+
+              nxny = "https://www.nxny.com/"
+              response = requests.post(
+                  f"{endpoint}/setup-session", headers=auth,
+                  json={"url": nxny, "timeout_seconds": 90}, timeout=55, allow_redirects=False,
+              )
+              print(f"setup_session_http={response.status_code}")
+              if response.status_code not in (200, 201):
+                  return False
+
+              session = response.json()
+              cleanup_ok = False
+              try:
+                  with sync_playwright() as playwright:
+                      browser = playwright.chromium.connect_over_cdp(session["cdp_url"], timeout=25000)
+                      context = browser.contexts[0]
+
+                      def block_downloads(route):
+                          path = urlsplit(route.request.url).path.lower()
+                          if "/download/" in path or path.endswith(".pdf"):
+                              route.abort()
+                          else:
+                              route.continue_()
+
+                      context.route("**/*", block_downloads)
+                      page = context.pages[0] if context.pages else context.new_page()
+                      page.goto(nxny, wait_until="domcontentloaded", timeout=20000)
+                      page.locator("#loginstr2").filter(has_text="退出登录").wait_for(timeout=15000)
+                      print("nxny_login=confirmed")
+              finally:
+                  try:
+                      cleanup = requests.post(
+                          f"{endpoint}/setup-session/cancel", headers=auth,
+                          json={"session_id": session["session_id"]}, timeout=20, allow_redirects=False,
+                      )
+                      cleanup_ok = cleanup.status_code in (200, 204)
+                      print(f"session_cancel_http={cleanup.status_code}")
+                  except Exception as error:
+                      print(f"session_cancel_error={type(error).__name__}")
+              return cleanup_ok
+
+          try:
+              ok = verify()
+          except Exception as error:
+              print(f"check_error={type(error).__name__}")
+              ok = False
+
+          print(f"result={'passed' if ok else 'failed'}")
+          raise SystemExit(0 if ok else 1)
+          PY
