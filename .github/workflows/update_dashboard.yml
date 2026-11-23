@@ -79,6 +79,10 @@ jobs:
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
         run: python scripts/report_io.py backup
 
+      - name: Install PDF text verifier for selected reports
+        if: github.event_name == 'workflow_dispatch' && inputs.report_id != ''
+        run: python -m pip install 'pypdf>=6,<7'
+
       - name: Extract PDF and merge history
         id: extract
         env:
@@ -91,9 +95,7 @@ jobs:
           if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
       - name: Verify the selected report and PDF page references
         if: github.event_name == 'workflow_dispatch' && inputs.report_id != ''
-        run: |
-          python -m pip install 'pypdf>=6,<7'
-          python scripts/verify_selected_report.py
+        run: python scripts/verify_selected_report.py
       - name: Commit only changed dashboard data
         id: commit
         run: |
