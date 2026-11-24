@@ -3,8 +3,8 @@
   "demo_mode": false,
   "updated_at": "2026-11-24T17:56:09+08:00",
   "benchmark_yields": {
-    "1-3Y": 1.24,
-    "5-7Y": 1.44,
+    "1-3Y": 1.23,
+    "5-7Y": 1.43,
     "10Y": 1.59,
     "30Y": 2.05
   },
@@ -1931,6 +1931,6 @@
     }
   ],
   "radar_alerts": [],
-  "benchmark_as_of": "2026-11-23",
+  "benchmark_as_of": "2026-11-24",
   "benchmark_source_url": "https://yield.chinabond.com.cn/cbweb-czb-web/czb/moreInfo?locale=cn_ZH&nameType=1"
 }
