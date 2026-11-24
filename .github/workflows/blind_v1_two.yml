@@ -1,0 +1,72 @@
+name: V1 isolated two-report blind read
+on:
+  push:
+    branches: [trial/blind-v1-two-20261125]
+    paths: ['.github/workflows/blind_v1_two.yml']
+permissions:
+  contents: read
+jobs:
+  first-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 99e16c824ab9a19d7b87367937513250375595e2
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -q -r pilot/requirements-unified.txt google-api-python-client requests
+      - name: Read two verified PDFs privately and replay
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+        shell: python
+        run: |
+          import sys,os
+          sys.path.insert(0,os.getcwd())
+          import hashlib,io,json,tempfile,subprocess
+          from pathlib import Path
+          from googleapiclient.http import MediaIoBaseUpload
+          from scripts.report_io import drive_service,download_cached
+          drive=drive_service()
+          def h(s): return hashlib.sha256(s.encode()).hexdigest()
+          root=drive.files().get(fileId='root',fields='id,ownedByMe,shared').execute()
+          assert root['ownedByMe'] and not root.get('shared') and h(root['id'])=='ed4ba419f13cf234196e3958d1c6a82871a43fd075210b3574fe325540baec83'
+          run=os.environ['GITHUB_RUN_ID']
+          dest=drive.files().create(body={'name':'盲测-V1-双周报-'+run+'.json','mimeType':'application/json'},fields='id,shared,ownedByMe').execute()
+          assert dest['ownedByMe'] and not dest.get('shared')
+          receipt=dict(run=run,baseline='99e16c824ab9a19d7b87367937513250375595e2',reference_sha256='d481148c04a552f3597e612f1d46f9cb6cff995db1670b1fcf283afb6904ff56',state='starting')
+          def save():
+              drive.files().update(fileId=dest['id'],media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(receipt,ensure_ascii=False).encode()),mimetype='application/json')).execute(num_retries=2)
+          save()
+          samples=[["821d1984316d32001cbc171e3158ff33793a705b8957551f578708203f0e02b3","95ebad7b23c003f6f225d12f8537fbbed44e85ad64b76eca464d0c4a0bb6abee","渤海证券","2026-10-23"],["c8a77085441210ef06dd7d0b9e93f4ddb7e295a2ebe3deefcf5462190d16d61a","2c32fdac9ed0f90809355dfa0c7fc9baa2689d2a7180c6c8b517b8e95a2cb14b","东吴证券","2026-09-06"]]
+          try:
+              with tempfile.TemporaryDirectory() as td:
+                  d=Path(td); manifest=[]
+                  for i,(identity,pdfhash,broker,day) in enumerate(samples):
+                      token=None
+                      while True:
+                          resp=drive.files().list(q="trashed=false and mimeType='application/pdf' and name contains '"+broker+"'",fields='nextPageToken,files(id,size,md5Checksum)',pageSize=1000,pageToken=token).execute(num_retries=2)
+                          found=next((x for x in resp['files'] if h(x['id'])==identity),None)
+                          token=resp.get('nextPageToken')
+                          if found or not token: break
+                      if not found: raise FileNotFoundError('Frozen PDF unavailable to runner: '+str(i+1))
+                      data=download_cached(drive,found)
+                      assert hashlib.sha256(data).hexdigest()==pdfhash
+                      path=d/(str(i)+'.pdf');path.write_bytes(data)
+                      manifest.append(dict(pdf=str(path),broker=broker,source=found['id'],day=day))
+                  m=d/'manifest.json';m.write_text(json.dumps(manifest))
+                  receipt['state']='reading';save()
+                  cmd=[sys.executable,'pilot/unified.py',str(m),'--cache',str(d/'cache.db')]
+                  out=d/'first.json'
+                  subprocess.run(cmd+['--output',str(out)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                  first=json.loads(out.read_bytes());receipt.update(state='first_saved',first=first);save()
+                  again=d/'replay.json';subprocess.run(cmd+['--offline','--output',str(again)],check=True)
+                  replay=json.loads(again.read_bytes())
+                  assert first['snapshot']==replay['snapshot'] and all(r['evidence_source']=='cache' for r in replay['reports'])
+                  receipt.update(state='completed',replay_identical=True);save()
+          except Exception as e:
+              receipt.update(state='failed',error=type(e).__name__,detail=str(e)[:180]);save()
+              raise SystemExit(1)
