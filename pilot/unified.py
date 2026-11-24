@@ -12,6 +12,7 @@ from jsonschema import validate
 
 from evidence_cards import cached_extract, connect, encode, ingest, snapshot
 from link_portfolio import links
+from strategy_review import reconcile
 from generic_duration import unspecified_long_end
 from recover_missing import recover
 from round_three import extractor_version, pages_and_spans, process_spans, select, selection_schema
@@ -21,7 +22,7 @@ from round_two import MODEL
 def pipeline_id():
     root=Path(__file__).resolve().parent
     names=("unified.py","requirements-unified.txt","round_two.py","round_three.py","evidence_cards.py",
-           "recover_missing.py","link_portfolio.py","generic_duration.py","../schemas/view_extraction.schema.json")
+           "recover_missing.py","link_portfolio.py","generic_duration.py","strategy_review.py","../schemas/view_extraction.schema.json")
     resources={n:(root/n).read_text(encoding="utf8") for n in names}
     return hashlib.sha256(encode(resources).encode()).hexdigest()
 
@@ -81,8 +82,9 @@ def execute(manifest, cache, seed, offline):
             for tenor,card in links(spans,portfolio,digest).items():
                 if cards[tenor] is None:
                     cards[tenor]=card
-            ingest(ledger,source,digest,broker,day,cards,portfolio+unspecified_long_end(spans))
-            reports.append(dict(source=source,sha256=digest,broker=broker,day=day,request=request,
+            portfolio, audit = reconcile(digest,spans,raw,parsed,cards,portfolio+unspecified_long_end(spans))
+            ingest(ledger,source,digest,broker,day,cards,portfolio)
+            reports.append(dict(candidate_audit=audit,source=source,sha256=digest,broker=broker,day=day,request=request,
                                 evidence_source=origin,recovery=events,verified_pages=len(pages)))
         return dict(pipeline_id=pipeline_id(),extractor_version=revision,model=MODEL,
                     packages={p:version(p) for p in ("pypdf","jsonschema")},reports=reports,snapshot=snapshot(ledger))
