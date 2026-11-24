@@ -112,6 +112,12 @@ jobs:
       - name: Verify the selected report and PDF page references
         if: github.event_name == 'workflow_dispatch' && inputs.report_id != ''
         run: python scripts/verify_selected_report.py
+      - name: Verify new report references before publication
+        if: env.NXNY_REPORT_ID == ''
+        run: |
+          if git diff --quiet -- dashboard_data.json; then echo "No new report data"; exit 0; fi
+          git show HEAD:dashboard_data.json > "$RUNNER_TEMP/dashboard-before.json"
+          python scripts/verify_selected_report.py --previous "$RUNNER_TEMP/dashboard-before.json"
       - name: Commit only changed dashboard data
         id: commit
         run: |
