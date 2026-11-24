@@ -38,11 +38,11 @@ jobs:
           run=os.environ['GITHUB_RUN_ID']
           dest=drive.files().create(body={'name':'两篇盲测-V3-原归档-'+run+'.json','mimeType':'application/json'},fields='id,shared,ownedByMe,parents').execute()
           assert dest['ownedByMe'] and not dest.get('shared') and dest['parents']==prior['parents']
-          receipt=dict(run=run,baseline='cd0c66f5023ed9a39c3175235756ac75a34f09a4',reference_sha256='1e0f461387581f73fe4b32a7b8db1886b1f8e7c88830c29c7e02164d72483bc0',state='starting')
+          receipt=dict(run=run,baseline='cd0c66f5023ed9a39c3175235756ac75a34f09a4',reference_sha256='605b136bb8a5cb0b47af9e90dbb49532422660190b7a3a2e54242f97b359ff68',state='starting')
           def save():
               drive.files().update(fileId=dest['id'],media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(receipt,ensure_ascii=False).encode()),mimetype='application/json')).execute(num_retries=2)
           save()
-          samples=[["e4cc984bcc6b2e21faaf402a1ae06d89c830ca0dabe7376923563016f34c9dc8","0f3e212bda0d0ab25333d9f2bf952e6d3680a5fa8a98ad6ee061938626acffc3","国联民生证券","2026-10-25"],["72e6d8a8aa371d3e4f6e0b84e4f10887f3e5e6de365e95e186fb574ff719e6aa","1232fc479aae16de9254ec4c94aef6ba59403e648955db19f2a37ea6054e11d0","渤海证券","2026-10-16"]]
+          samples=[["e4cc984bcc6b2e21faaf402a1ae06d89c830ca0dabe7376923563016f34c9dc8","0f3e212bda0d0ab25333d9f2bf952e6d3680a5fa8a98ad6ee061938626acffc3","国联民生证券","2026-10-25"],["41918793520c116f217f2c51b5f7655da28f1fae1a78cf1f0c0ebbe75235dd3f","c60d95849c168f05f8dd71197449c2e8ae108f25e1e5125306c7d5691a74a9e1","华泰证券","2026-10-07"]]
           try:
               with tempfile.TemporaryDirectory() as td:
                   d=Path(td); manifest=[]
