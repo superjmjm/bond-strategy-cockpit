@@ -1,4 +1,4 @@
-name: Replay and compare all five Treasury views
+name: Replay five Treasury views with same-page interval evidence
 on:
   push:
     branches: ['fix/ground-automatic-quotations']
