@@ -2,6 +2,7 @@
 import hashlib
 import re
 
+from author_policy import curve_intent, policy_clauses
 from evidence_cards import distinct, encode, normalize, resolve
 
 OUTSIDE = re.compile(r"美债|美国国债|美元债|信用债|城投债|企业债|转债|存单")
@@ -50,6 +51,9 @@ def strategy_records(digest, spans):
             legs = [["调出", m[1]]] + [["调入", b] for b in LEG.findall(m[3])]
             extension = [cite(nxt, following)] if RENEW.match(following) else []
             add(key, "组合切换", legs, m[0], ev+extension, m[0])
+        for kind, legs, terms in policy_clauses(s):
+            if terms in s:
+                add(key, kind, legs, terms, ev, terms)
         if OUTSIDE.search(s):
             continue
         if m := PAIR.search(s):
@@ -68,6 +72,22 @@ def strategy_records(digest, spans):
 
 def reconcile(digest, spans, raw, parsed, cards, portfolio):
     strategies = strategy_records(digest, spans)
+    curve = cards.get("曲线形态")
+    historical = set()
+    if curve:
+        future = []
+        for obs in curve["observations"]:
+            if curve_intent(obs):
+                future.append(obs)
+            else:
+                historical.update(c["id"] for c in obs.get("citations") or [obs])
+        if not future:
+            cards["曲线形态"] = None
+        elif len(future) != len(curve["observations"]):
+            curve["observations"] = future
+            directions = {o.get("direction") for o in future} - {None}
+            curve["conflict"] = len(directions) > 1
+            curve["direction"] = next(iter(directions)) if len(directions) == 1 else None
     indexed = []
     for rec in strategies:
         for match in rec.pop("matched"):
@@ -106,6 +126,8 @@ def reconcile(digest, spans, raw, parsed, cards, portfolio):
                               item["subject"] in clause and item["predicate"] in clause})
             if matches:
                 reason = "已关联原文判断"
+            elif key in historical and bucket == "曲线形态":
+                reason = "曲线方向缺少前瞻依据，保留为背景"
             elif not grounded:
                 reason = "引文或主谓无法定位，或属于此前观点"
             elif OUTSIDE.search(item["subject"]):

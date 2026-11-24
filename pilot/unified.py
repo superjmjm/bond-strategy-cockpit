@@ -22,7 +22,7 @@ from round_two import MODEL
 def pipeline_id():
     root=Path(__file__).resolve().parent
     names=("unified.py","requirements-unified.txt","round_two.py","round_three.py","evidence_cards.py",
-           "recover_missing.py","link_portfolio.py","generic_duration.py","strategy_review.py","../schemas/view_extraction.schema.json")
+           "recover_missing.py","link_portfolio.py","generic_duration.py","strategy_review.py","author_policy.py","../schemas/view_extraction.schema.json")
     resources={n:(root/n).read_text(encoding="utf8") for n in names}
     return hashlib.sha256(encode(resources).encode()).hexdigest()
 
