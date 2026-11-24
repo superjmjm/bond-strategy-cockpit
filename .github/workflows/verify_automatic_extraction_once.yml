@@ -1,4 +1,4 @@
-name: Replay automatic extraction in isolation
+name: Replay automatic extraction with fixed citation choices
 on:
   push:
     branches: ['fix/ground-automatic-quotations']
