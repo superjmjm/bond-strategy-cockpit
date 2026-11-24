@@ -17,6 +17,8 @@ on:
     paths: [index.html, dashboard_data.json]
   schedule:
     - cron: '17 0 * * *' # 北京时间 08:17
+    - cron: '17 4 * * *' # 北京时间 12:17
+    - cron: '17 9 * * *' # 北京时间 17:17
 permissions: {}
 concurrency:
   group: bond-cockpit-update
