@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 2d4f542470ca24a000131a9df0e487d1c8be2c1c
+          ref: cd0c66f5023ed9a39c3175235756ac75a34f09a4
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
@@ -38,7 +38,7 @@ jobs:
           run=os.environ['GITHUB_RUN_ID']
           dest=drive.files().create(body={'name':'盲测-三篇-V3B-'+run+'.json','mimeType':'application/json'},fields='id,shared,ownedByMe,parents').execute()
           assert dest['ownedByMe'] and not dest.get('shared') and dest['parents']==prior['parents']
-          receipt=dict(run=run,baseline='2d4f542470ca24a000131a9df0e487d1c8be2c1c',reference_sha256='1e0f461387581f73fe4b32a7b8db1886b1f8e7c88830c29c7e02164d72483bc0',state='starting')
+          receipt=dict(run=run,baseline='cd0c66f5023ed9a39c3175235756ac75a34f09a4',reference_sha256='1e0f461387581f73fe4b32a7b8db1886b1f8e7c88830c29c7e02164d72483bc0',state='starting')
           def save():
               drive.files().update(fileId=dest['id'],media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(receipt,ensure_ascii=False).encode()),mimetype='application/json')).execute(num_retries=2)
           save()
