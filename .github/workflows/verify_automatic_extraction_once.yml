@@ -1,0 +1,64 @@
+name: Replay automatic extraction in isolation
+on:
+  push:
+    branches: ['fix/ground-automatic-quotations']
+    paths: ['.github/workflows/verify_automatic_extraction_once.yml']
+permissions:
+  contents: read
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NXNY_REPORT_ID: '6536940'
+      EXPECTED_SHA: d4387fffa15bd296d8c5a88c67648c03a96096a97d1ae28a5ec377c68041348b
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Remove the already published sample only from the runner copy
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path("dashboard_data.json")
+          data = json.loads(path.read_text(encoding="utf8"))
+          live = [row for row in data["records"] if not row["is_demo"]]
+          assert sum(row["report_id"] == os.environ["EXPECTED_SHA"] for row in live) == 5
+          data["records"] = [row for row in data["records"] if row["report_id"] != os.environ["EXPECTED_SHA"]]
+          path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf8")
+          PY
+      - name: Restore only the archived validation PDF
+        env:
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+        run: python scripts/report_io.py fetch --archive-only
+      - name: Run the normal model extraction without publishing
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
+        run: env -u NXNY_REPORT_ID python scripts/extract_bond_reports.py
+      - name: Verify exact quotations, pages, and the benchmark reading
+        run: |
+          python scripts/verify_selected_report.py
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          data = json.loads(Path("dashboard_data.json").read_text(encoding="utf8"))
+          rows = {r["tenor"]: r for r in data["records"] if r["report_id"] == os.environ["EXPECTED_SHA"]}
+          assert len(rows) == 5 and {r["broker"] for r in rows.values()} == {"华创证券"}
+          assert {r["date"] for r in rows.values()} == {"2026-11-23"}
+          bond, curve = rows["10Y"], rows["curve"]
+          print("Replay profile:", {k: (r["stance"], r["target_range"], r["evidence_page"]) for k,r in rows.items()})
+          assert bond["stance"] == "neutral" and bond["target_range"] == [1.55, 1.60], "10Y interval differs from the reviewed report"
+          curve_text = curve["action"] + curve["marginal_change"] + curve["evidence_quote"]
+          assert curve["stance"] != "unstated" and curve["evidence_quote"], "curve evidence missing"
+          assert any(word in curve_text for word in ("收窄","压缩","走平","收敛")), "curve direction differs from the reviewed report"
+          assert rows["30Y"]["stance"] == "unstated", "relative-value evidence cannot classify outright 30Y"
+          print("The 10Y yield interval and relative curve view match the reviewed report.")
+          PY
