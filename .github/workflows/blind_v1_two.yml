@@ -32,11 +32,12 @@ jobs:
           from scripts.report_io import drive_service,download_cached
           drive=drive_service()
           def h(s): return hashlib.sha256(s.encode()).hexdigest()
-          root=drive.files().get(fileId='root',fields='id,ownedByMe,shared').execute()
-          assert root['ownedByMe'] and not root.get('shared') and h(root['id'])=='ed4ba419f13cf234196e3958d1c6a82871a43fd075210b3574fe325540baec83'
+          # Validate a private existing trial receipt and its parent using file-scoped OAuth.
+          prior=drive.files().get(fileId='1wQF5QVVGO4gngUQ3GuP3rUvfAFXUou6M',fields='ownedByMe,shared,parents').execute()
+          assert prior['ownedByMe'] and not prior.get('shared') and len(prior['parents'])==1 and h(prior['parents'][0])=='ed4ba419f13cf234196e3958d1c6a82871a43fd075210b3574fe325540baec83'
           run=os.environ['GITHUB_RUN_ID']
-          dest=drive.files().create(body={'name':'盲测-V1-双周报-'+run+'.json','mimeType':'application/json'},fields='id,shared,ownedByMe').execute()
-          assert dest['ownedByMe'] and not dest.get('shared')
+          dest=drive.files().create(body={'name':'盲测-V1-双周报-'+run+'.json','mimeType':'application/json'},fields='id,shared,ownedByMe,parents').execute()
+          assert dest['ownedByMe'] and not dest.get('shared') and dest['parents']==prior['parents']
           receipt=dict(run=run,baseline='99e16c824ab9a19d7b87367937513250375595e2',reference_sha256='d481148c04a552f3597e612f1d46f9cb6cff995db1670b1fcf283afb6904ff56',state='starting')
           def save():
               drive.files().update(fileId=dest['id'],media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(receipt,ensure_ascii=False).encode()),mimetype='application/json')).execute(num_retries=2)
