@@ -21,6 +21,7 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 INBOX = ROOT / "reports_inbox"
 LIST_URL = "https://www.nxny.com/stype_qh/"
+MAX_LIST_PAGES = 30
 MAX_BYTES = 48_000_000
 CN = timezone(timedelta(hours=8))
 
@@ -71,7 +72,7 @@ def download_cached(drive, row):
     return pdf
 
 
-def discover(body, today):
+def parse_listing(body):
     items = {}
     for block in re.findall(r"<li(?:\s[^>]*)?>(.*?)</li>", body, re.S | re.I):
         match = re.search(r'<a\s[^>]*href="(/report/view_(\d+)\.html)"[^>]*title="([^"]+)"', block)
@@ -81,12 +82,60 @@ def discover(body, today):
         try:
             day = datetime.strptime(title.rsplit("-", 1)[-1], "%y%m%d").date()
         except ValueError:
-            continue
-        items[match[2]] = (title, day)
+            day = None
+        uploaded = re.search(r"上传时间\s*[：:]\s*(\d{8})\b", block)
+        try:
+            upload_day = datetime.strptime(uploaded[1], "%Y%m%d").date() if uploaded else None
+        except ValueError:
+            upload_day = None
+        items[match[2]] = (title, day, upload_day)
     if not items:
         raise ValueError("NXNY list unavailable or structure changed")
-    return [(rid,title) for rid,(title,day) in items.items()
-            if today-timedelta(days=7) <= day <= today and weekly_broker(title)]
+    return items
+
+
+def scan_listing(today, seen_ids, archived_names, limit, target=""):
+    """Read public list pages in upload order; never download a PDF here."""
+    cutoff = today - timedelta(days=7)
+    reports = []
+    fingerprints = set()
+    seen_ids = set(seen_ids)
+    for page in range(1, MAX_LIST_PAGES + 1):
+        url = LIST_URL if page == 1 else f"{LIST_URL.rstrip('/')}_p{page}/"
+        try:
+            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=45)
+            response.raise_for_status()
+            body = response.content.decode("utf8")
+            items = parse_listing(body)
+        except (requests.RequestException, ValueError) as error:
+            return reports, page, f"page {page}: {type(error).__name__}"
+        fingerprint = frozenset(items)
+        if fingerprint in fingerprints:
+            return reports, page, f"page {page}: repeated listing"
+        fingerprints.add(fingerprint)
+        for rid, (title, report_day, _) in items.items():
+            if rid in seen_ids or (target and rid != target):
+                continue
+            if not report_day or not cutoff <= report_day <= today or not weekly_broker(title):
+                continue
+            if f"{rid}-{name_for(title)}.pdf" in archived_names:
+                continue
+            reports.append((rid, title))
+            seen_ids.add(rid)
+            if len(reports) == limit:
+                return reports, page, None
+
+        uploads = [upload for _, _, upload in items.values()]
+        if all(upload and upload < cutoff for upload in uploads):
+            return reports, page, None
+        next_pages = {int(n) for n in re.findall(
+            r"""href\s*=\s*["'](?:https://www\.nxny\.com)?/stype_qh_p(\d+)/["']""", body
+        ) if int(n) > page}
+        if not next_pages:
+            return reports, page, None
+        if page + 1 not in next_pages:
+            return reports, page, f"page {page}: next page missing"
+    return reports, MAX_LIST_PAGES, "list page limit reached before completing discovery"
 
 
 def fetch_nxny(rid):
@@ -146,7 +195,12 @@ def fetch(drive, folder, *, archive_only=False):
     if (target or archive_only) and not re.fullmatch(r"[0-9]{1,12}", target):
         raise ValueError("NXNY report ID must be numeric")
     INBOX.mkdir(exist_ok=True)
-    known = {r.get("report_id") for r in json.loads((ROOT/"dashboard_data.json").read_text("utf8"))["records"]}
+    records = json.loads((ROOT/"dashboard_data.json").read_text("utf8"))["records"]
+    known = {row.get("report_id") for row in records}
+    published_ids = {
+        match[1] for row in records if not row.get("is_demo")
+        if (match := re.match(r"^(\d+)-", row.get("source_file") or ""))
+    }
     backups = list_pdfs(drive, folder)
     prior = {r["name"]:r for r in backups}
     by_id = {r["appProperties"]["nxny_id"]:r for r in backups if r.get("appProperties",{}).get("nxny_id")}
@@ -175,18 +229,13 @@ def fetch(drive, folder, *, archive_only=False):
                 recovered += 1
             except Exception as error:
                 failures.append(type(error).__name__)
-    reports = []
+    reports, pages = [], 0
     if not archive_only and (not target or target not in by_id):
-        try:
-            response = requests.get(LIST_URL, headers={"User-Agent":"Mozilla/5.0"},timeout=45)
-            response.raise_for_status()
-            reports = discover(response.content.decode("utf8"), datetime.now(CN).date())
-        except Exception as error:
-            failures.append("discovery: "+type(error).__name__)
-        if target:
-            reports = [(rid, title) for rid, title in reports if rid == target]
-            if not reports:
-                failures.append("Selected report is absent from the eligible listing")
+        reports, pages, issue = scan_listing(datetime.now(CN).date(), published_ids | set(by_id), prior, limit, target)
+        if issue:
+            failures.append("discovery: " + issue)
+        if target and not reports and target not in published_ids:
+            failures.append("Selected report is absent from the eligible listing")
     downloaded = 0
     for rid,title in reports:
         filename = f"{rid}-{name_for(title)}.pdf"
@@ -201,7 +250,7 @@ def fetch(drive, folder, *, archive_only=False):
             failures.append(f"{rid}: {type(error).__name__}")
             # An expired browser session should consume at most one attempted download.
             break
-    print(f"Latest list candidates={len(reports)}, new attempts={downloaded}, restored={recovered}")
+    print(f"Latest list candidates={len(reports)}, new attempts={downloaded}, restored={recovered}, pages={pages}")
     if failures:
         print("::warning::Fetch incomplete: "+", ".join(failures))
     if failures:

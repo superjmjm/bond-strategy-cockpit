@@ -41,7 +41,7 @@ https://raw.githubusercontent.com/OWNER/REPO/main/dashboard_data.json
 
 如需在浏览器中首次授权，可在 Google Auth Platform 配置受众和 OAuth 客户端，选择 Web application，在 Authorized redirect URIs 登记 https://developers.google.com/oauthplayground 。打开 Google OAuth 2.0 Playground 设置，启用 Use your own OAuth credentials，使用自己的客户端并选择 Offline。授权能读写目标目录的 Drive scope，交换授权码后，把 refresh_token 与该客户端的一对凭据写入上面的 Secret。drive.file 仅能使用该客户端已获准访问的文件或目录；若使用既有的完整 Drive 授权，其 scope 为 https://www.googleapis.com/auth/drive 。外部测试状态签发的刷新令牌可能很快失效，长期运行前检查授权应用的发布状态。
 
-**NXNY。** 默认采集器沿用债券列表第一页和已登录云浏览器配置，在详情页查找下载控件，通过同一浏览器读取 PDF。列表默认取最近七天，排除美债、转债、信用、科创、REIT 和既有排除券商的相关标题。仅分页首屏有覆盖；高峰期离开首屏的新增报告可能漏收。列表为空、页面结构变化、登录过期均有失败信号。已备份但未入研究库的文件下次优先从 Drive 恢复，按 PDF SHA-256 判重。指定目录宜为本项目专用；若旧系统另有备份，默认不会自动识别没有本项目摘要标记的历史 PDF。并行运行其它采集器时，各自的下载预算独立。
+**NXNY。** 采集器从债券列表首页顺序翻页，按北京时间保留标题日期为当天至往前第 7 天、符合覆盖券商和周报规则的候选。优先恢复尚未入库的 Drive 文件，并通过站内研报编号跳过归档和已发布记录。找到足够的未下载候选、超过上传日期窗口或到达列表末页时停止扫描。超过 30 页还未完成、目录异常或登录过期会产生失败信号。之后使用已登录云浏览器配置在详情页下载，按 PDF SHA-256 防止重复入库。指定目录宜为本项目专用；旧系统没有本项目摘要标记的历史 PDF 默认不会自动识别。并行运行其它采集器时，各自的下载预算独立。
 
 **GitHub 写权限。** Settings → Actions → General 允许工作流使用 contents: write，并确认默认分支规则允许数据提交。内置 GITHUB_TOKEN 由 Actions 自动签发。分支保护禁止机器人推送时，需要用组织允许的发布分支或相应规则。无需把个人 GitHub token 放入前端。
 
