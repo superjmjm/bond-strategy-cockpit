@@ -50,7 +50,7 @@ https://raw.githubusercontent.com/OWNER/REPO/main/dashboard_data.json
 1. 确认本次提取结果可以公开发布，再填好上述四个 Secrets 和新建空备份目录的 GDRIVE_FOLDER_ID，设置 ENABLE_REPORT_PIPELINE=true、MAX_NEW_PDFS=1。到 Actions → Update bond cockpit → Run workflow，选择默认分支，trigger_source 选 manual。
 2. 在 Actions 看 Fetch、Back up、Extract、Commit 四步。在 Drive 核对 PDF 的 ID 前缀和原始标题。成功提取后，dashboard_data.json 应出现真实报告哈希，demo_mode 变为 false。刷新网页，选择期限 → 券商 → 查看原文证据，核对页码和引文。抽屉仅引用文字和页码，原始 PDF 在 Drive 备份目录。
 3. 新报告全部重复或列表没有新报告时，文件保持原样。单篇模型错误继续处理本批其它 PDF；部分成功先提交，最终将该批标红。全失败保留旧文件，已备份的 PDF 可在下次恢复。不要把“已派单”当作“已产出数据”。
-4. 默认示例排程为北京时间 08:17，对应 UTC 00:17。如选 GitHub 调度，SCHEDULER 填 github 即可，实际开始时间由 GitHub 安排。如选 Cloudflare，SCHEDULER 填 cloudflare，再按下一节配置 Worker。手动触发可用于独立验收。
+4. 本仓库的 GitHub Actions 排程为北京时间每日 08:17、12:17、17:17，对应 UTC 00:17、04:17、09:17。如选 GitHub 调度，SCHEDULER 填 github，实际开始时间由 GitHub 安排。如选 Cloudflare，SCHEDULER 填 cloudflare，再按下一节配置 Worker。手动触发可用于独立验收。
 
 ## 4. Cloudflare Workers 后台
 
