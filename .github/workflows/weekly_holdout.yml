@@ -1,0 +1,96 @@
+name: Isolated weekly holdout R2
+on:
+  push:
+    branches: [trial/weekly-holdout-r2]
+    paths: ['.github/workflows/weekly_holdout.yml']
+permissions:
+  contents: read
+jobs:
+  first-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 84181bd0ea78adad40d8f51b258d08373f8736d3
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -q -r pilot/requirements-unified.txt google-api-python-client requests
+      - name: Read three verified PDFs privately and replay
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+        shell: python
+        run: |
+          import sys,os
+          sys.path.insert(0,os.getcwd())
+          import hashlib,io,json,tempfile,subprocess
+          from pathlib import Path
+          from googleapiclient.http import MediaIoBaseUpload
+          from scripts.report_io import drive_service,download_cached
+          drive=drive_service()
+          def h(s): return hashlib.sha256(s.encode()).hexdigest()
+          # Validate a private existing trial receipt and its parent using file-scoped OAuth.
+          prior=drive.files().get(fileId='1wQF5QVVGO4gngUQ3GuP3rUvfAFXUou6M',fields='ownedByMe,shared,parents').execute()
+          assert prior['ownedByMe'] and not prior.get('shared') and len(prior['parents'])==1 and h(prior['parents'][0])=='ed4ba419f13cf234196e3958d1c6a82871a43fd075210b3574fe325540baec83'
+          run=os.environ['GITHUB_RUN_ID']
+          dest=drive.files().create(body={'name':'盲测-三篇-R2-'+run+'.json','mimeType':'application/json'},fields='id,shared,ownedByMe,parents').execute()
+          assert dest['ownedByMe'] and not dest.get('shared') and dest['parents']==prior['parents']
+          receipt=dict(run=run,baseline='84181bd0ea78adad40d8f51b258d08373f8736d3',reference_sha256='e7e643f5d53b2a95c357fb84d30d9ac7d0d9e844dade7a4184513c893ed2f633',state='starting')
+          def save():
+              drive.files().update(fileId=dest['id'],media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(receipt,ensure_ascii=False).encode()),mimetype='application/json')).execute(num_retries=2)
+          save()
+          samples=[["29bc36250346112b4550953bc55c35f53b68b9515cc59c5d55609db3336b42fe","102f53651ecc616c5bc3089c5b3ea67c57c4dfa8d55813877e3655df960d6214","华泰证券","2026-11-08"],["168f289dfb5564ca41df9ba48f9ea06c9fb3d93643be29eee1f95b6beb9be4c6","a092cd0a3f5d04a3fc27a5ca10061d9aad687f1fe02474c9db1e7813c337d927","中邮证券","2026-11-02"],["7e3dd752a6e65bbdd2e977a06e2673585b203d1a63ec0e6352249dfe4327770e","ff5e5348b7f800f4612f4feb73a1df514f06608897bb34c70ea03502fd716dbd","东吴证券","2026-10-18"]]
+          try:
+              with tempfile.TemporaryDirectory() as td:
+                  d=Path(td); manifest=[]
+                  import time, zipfile
+                  from googleapiclient.errors import HttpError
+                  stage=drive.files().create(body={'name':'blind-three-R2-'+run+'.zip','mimeType':'application/zip'},fields='id,parents,shared,ownedByMe').execute()
+                  assert stage['ownedByMe'] and not stage.get('shared') and stage['parents']==prior['parents']
+                  receipt.update(state='awaiting_verified_inputs',stage=stage['id']);save()
+                  try:
+                      for _ in range(120):
+                          obj=drive.files().get(fileId=stage['id'],fields='size,shared').execute(num_retries=2)
+                          if obj.get('shared'): raise ValueError('Staging file became shared')
+                          if int(obj.get('size',0)): break
+                          time.sleep(4)
+                      else: raise TimeoutError('Private handoff timed out')
+                      bundle=drive.files().get_media(fileId=stage['id']).execute(num_retries=2)
+                      assert hashlib.sha256(bundle).hexdigest()=='1765dcf7b370826f993ff0075b0a894ec82cb4515a871198126ae5572f741914'
+                      with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                          meta=json.loads(archive.read('transfer.json')); checks={}
+                          for check in meta['checks']:
+                              try:
+                                  obj=drive.files().get(fileId=check['id'],supportsAllDrives=True,fields='id,mimeType,shortcutDetails(targetId)').execute(num_retries=2)
+                                  checks[check['label']]={'http':200,'mime':obj['mimeType'],'target':obj.get('shortcutDetails',{}).get('targetId')}
+                              except HttpError as err: checks[check['label']]={'http':err.resp.status}
+                          receipt['direct_access']=checks
+                          receipt['reported_scopes']=list(getattr(getattr(drive._http,'credentials',None),'granted_scopes',None) or [])
+                          save()
+                          for i,(identity,pdfhash,broker,day) in enumerate(samples):
+                              entry=meta['rows'][i]; fid=entry['id']
+                              assert h(fid)==identity
+                              data=archive.read(str(i)+'.pdf')
+                              assert hashlib.sha256(data).hexdigest()==pdfhash
+                              path=d/(str(i)+'.pdf');path.write_bytes(data)
+                              manifest.append(dict(pdf=str(path),broker=broker,source=fid,day=day))
+                  finally:
+                      drive.files().update(fileId=stage['id'],body={'trashed':True}).execute(num_retries=2)
+                  m=d/'manifest.json';m.write_text(json.dumps(manifest))
+                  receipt['state']='reading';save()
+                  cmd=[sys.executable,'pilot/unified.py',str(m),'--cache',str(d/'cache.db')]
+                  out=d/'first.json'
+                  subprocess.run(cmd+['--output',str(out)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                  import base64, zlib, sqlite3
+                  db=sqlite3.connect(d/'cache.db');receipt['evidence_cache_sql_zlib_b64']=base64.b64encode(zlib.compress('\n'.join(db.iterdump()).encode())).decode();db.close()
+                  first=json.loads(out.read_bytes());receipt.update(state='first_saved',first=first);save()
+                  again=d/'replay.json';subprocess.run(cmd+['--offline','--output',str(again)],check=True)
+                  replay=json.loads(again.read_bytes())
+                  assert first['snapshot']==replay['snapshot'] and all(r['evidence_source']=='cache' for r in replay['reports'])
+                  receipt.update(state='completed',replay_identical=True);save()
+          except Exception as e:
+              receipt.update(state='failed',error=type(e).__name__,detail=str(e)[:180]);save()
+              raise SystemExit(1)
