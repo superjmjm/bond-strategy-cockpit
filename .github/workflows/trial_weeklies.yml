@@ -9,6 +9,8 @@ on:
       - 'pipeline/build_snapshot.py'
       - 'pilot/replay_weeklies.py'
       - 'pilot/round_two.py'
+      - 'pilot/round_three.py'
+      - 'pilot/evidence_cards.py'
       - '.github/workflows/trial_weeklies.yml'
 permissions:
   contents: read
@@ -51,4 +53,4 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
-        run: python pilot/round_two.py
+        run: python pilot/round_three.py
