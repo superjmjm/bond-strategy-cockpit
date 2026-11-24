@@ -11,6 +11,7 @@ on:
       - 'pilot/round_two.py'
       - 'pilot/round_three.py'
       - 'pilot/evidence_cards.py'
+      - 'pilot/trial_evidence_cache.py'
       - '.github/workflows/trial_weeklies.yml'
 permissions:
   contents: read
@@ -33,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile pilot/replay_weeklies.py pilot/round_two.py
+          python -m py_compile pilot/replay_weeklies.py pilot/round_two.py pilot/round_three.py pilot/evidence_cards.py pilot/trial_evidence_cache.py
           for input in schemas/extraction_prompt.md schemas/view_extraction.schema.json schemas/data_contract.md pipeline/build_snapshot.py; do
             if [[ ! -s "$input" ]]; then
               echo 'Awaiting original handoff files. Extraction has not started.'
