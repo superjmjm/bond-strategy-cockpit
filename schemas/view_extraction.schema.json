@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BondReportExtraction",
+  "description": "OpenAI Structured Outputs (strict: true) schema for extracting sell-side China government bond tenor views from a single research report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["broker", "series", "report_date", "views"],
+  "properties": {
+    "broker": {
+      "type": "string",
+      "description": "券商标准简称，如 招商证券、兴业证券、国联民生、华创证券、广发证券、中信建投、华泰证券、申万宏源 等"
+    },
+    "series": {
+      "type": "string",
+      "description": "研报系列名，如 利率策略周报、债券策略周报"
+    },
+    "report_date": {
+      "type": "string",
+      "description": "研报发布日期 YYYY-MM-DD"
+    },
+    "views": {
+      "type": "array",
+      "description": "该份研报中对各个国债/利率债期限桶给出的明确策略观点；若研报未对任何期限给出观点则返回空数组",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tenor",
+          "raw_tenor",
+          "direction",
+          "action",
+          "target_type",
+          "target_low",
+          "target_high",
+          "target_note",
+          "horizon",
+          "drivers",
+          "risk",
+          "logic",
+          "cond",
+          "quote",
+          "page"
+        ],
+        "properties": {
+          "tenor": {
+            "type": "string",
+            "enum": ["短端(1-3Y)", "中端(5-7Y)", "10Y国债", "30Y超长债", "曲线形态"],
+            "description": "归入的5个标准实战期限桶之一"
+          },
+          "raw_tenor": {
+            "type": "string",
+            "description": "原文表述的具体品种与期限，如 1年国债、5年国债、7年骑乘、10年国债、30年国债、30Y-10Y利差、短端利率债(期限未细分)"
+          },
+          "direction": {
+            "type": "integer",
+            "enum": [-2, -1, 0, 1, 2],
+            "description": "方向分：+2强烈看多，+1偏多/逢调配置，0中性震荡/观望，-1偏空防守/止盈，-2强烈看空。对于曲线形态：+表示看平，-表示看陡"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "加仓/拉久期",
+              "逢调加仓",
+              "骑乘策略",
+              "区间波段",
+              "持有观望",
+              "止盈/降久期",
+              "减仓防守",
+              "做平曲线",
+              "做陡曲线",
+              "曲线中性"
+            ],
+            "description": "标准化交投建议"
+          },
+          "target_type": {
+            "type": "string",
+            "enum": ["明确区间", "单点目标", "相对变动bp", "无点位"],
+            "description": "原文是否给出具体数值目标；若原文没给数字，必须选 无点位"
+          },
+          "target_low": {
+            "type": ["number", "null"],
+            "description": "目标下限（国债为收益率%，如 1.60；曲线利差为bp，如 25；无明确区间/单点时必须为 null，严禁编造）"
+          },
+          "target_high": {
+            "type": ["number", "null"],
+            "description": "目标上限（单点目标时等于 target_low；无点位或仅给相对变动bp时必须为 null）"
+          },
+          "target_note": {
+            "type": "string",
+            "description": "对目标的简短原文补充，如 '1.60%-1.70%'、'仍有3-5bp下行空间'、'跌破1.75%可加仓' 或 '未给具体点位'"
+          },
+          "horizon": {
+            "type": "string",
+            "enum": ["短期(1-2周)", "1个月", "季度/中长期", "条件触发", "未明确"],
+            "description": "作者给出的时间窗口"
+          },
+          "drivers": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "description": "驱动该判断的核心逻辑（严格6层大类 + 开放短语）",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["layer", "impact", "phrase"],
+              "properties": {
+                "layer": {
+                  "type": "string",
+                  "enum": ["基本面", "政策面", "资金面", "机构行为", "供给面", "估值情绪"]
+                },
+                "impact": {
+                  "type": "string",
+                  "enum": ["利多", "利空", "中性"],
+                  "description": "该逻辑对本期限债券价格（或对曲线走平）的影响方向"
+                },
+                "phrase": {
+                  "type": "string",
+                  "description": "4-10字中文短语概括具体主线，如 央行换锚、债基赎回负反馈、特别国债供给、存单利率下行"
+                }
+              }
+            }
+          },
+          "risk": {
+            "type": "string",
+            "description": "作者提示的主要反向风险或证伪条件（15字以内）"
+          },
+          "logic": {
+            "type": "string",
+            "description": "一句话总结作者在该期限上的核心逻辑与交投建议（30-70字）"
+          },
+          "cond": {
+            "type": "string",
+            "description": "成立条件或触发点位（如无明确条件则写 暂无明确触发条件）"
+          },
+          "quote": {
+            "type": "string",
+            "description": "研报原文中支撑该判断的关键原句摘录（尽量逐字引用，40-150字）"
+          },
+          "page": {
+            "type": "integer",
+            "description": "上述原文摘录所在的 PDF 页码（从 1 开始）"
+          }
+        }
+      }
+    }
+  }
+}
