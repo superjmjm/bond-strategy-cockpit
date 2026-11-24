@@ -17,10 +17,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError, create_model, field
 
 if __package__:
     from .report_scope import covered_broker, weekly_broker
-    from .verify_selected_report import citation_spans
+    from .verify_selected_report import citation_spans, normalized
 else:
     from report_scope import covered_broker, weekly_broker
-    from verify_selected_report import citation_spans
+    from verify_selected_report import citation_spans, normalized
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -107,6 +107,14 @@ class ReportExtraction(ReportIdentity):
 OPINION_FIELDS = ("short_end", "intermediate", "ten_year", "thirty_year", "curve")
 TREASURY_PHRASE = re.compile(r"国债|期限利差|收益率曲线|走陡|走平")
 MAX_CITATIONS = 700
+TENOR_REFERENCE = {
+    "1-3Y": re.compile(r"短端|(?<!\d)(?:[123](?:[-—–至到][123])?|[一二两三])(?:年|y)"),
+    "5-7Y": re.compile(r"中端|(?<!\d)(?:[567](?:[-—–至到][567])?|[五六七])(?:年|y)"),
+    "10Y": re.compile(r"(?<!\d)(?:10|十)(?:年|y)"),
+    "30Y": re.compile(r"(?<!\d)(?:30|三十)(?:年|y)"),
+}
+YIELD_INTERVAL = re.compile(r"(\d+(?:\.\d+)?)%?[-—–~～至到](\d+(?:\.\d+)?)%")
+CURVE_REFERENCE = re.compile(r"曲线|期限利差|走陡|走平|相对价值|30[-—–/]10(?:y|年)|10[-—–/]30(?:y|年)")
 
 
 class ExtractionError(ValueError):
@@ -139,8 +147,15 @@ marginal_change写文中明确的新变化，无则注明未说明。action及fa
 缺失填“未明确提及”。target_range仅取该期限明确的收益率区间，单位百分数，
 如2.10%写2.10，明确的区间只用两个由低至高的端点；单点、价差、基点、曲线策略均填null。
 每条有明确立场的观点选一个能支持判断的原句编号填evidence_id，如P14S2。
-有区间时优先选同时包含两个端点的短句。没有适当证据时填unstated。
+对各个期限，证据短句应明确写出国债品种及对应期限，禁止把10年预测填给短端或中端。
+有区间时选同一短句内同时包含对应期限和两个区间端点的证据。没有适当证据时填unstated。
 """
+
+
+def evidence_matches_tenor(tenor, text):
+    if tenor == "curve":
+        return bool(CURVE_REFERENCE.search(text))
+    return bool("国债" in text and TENOR_REFERENCE[tenor].search(text))
 
 
 def resolve_indexed_report(report: ReportIdentity, citations) -> ReportExtraction:
@@ -148,20 +163,23 @@ def resolve_indexed_report(report: ReportIdentity, citations) -> ReportExtractio
     for tenor, field in zip(TENORS, OPINION_FIELDS, strict=True):
         opinion = getattr(report, field)
         view = opinion.model_dump(exclude={"evidence_id"})
-        page, quote = None, ""
-        if opinion.stance == "unstated" or opinion.evidence_id is None:
+        key = opinion.evidence_id.value if opinion.evidence_id is not None else None
+        page, quote = citations.get(key, (None, ""))
+        source = normalized(quote).lower()
+        if opinion.stance == "unstated" or not evidence_matches_tenor(tenor, source):
             if opinion.stance != "unstated":
-                LOG.warning("%s 无可核对证据，保留为未表态", tenor)
+                LOG.warning("%s 无对应期限的可核对证据，保留为未表态", tenor)
+            page, quote = None, ""
             view.update(stance="unstated", drivers=[], target_range=None,
                         marginal_change="未明确提及", action="未明确提及", falsification="未明确提及")
         else:
-            page, quote = citations[opinion.evidence_id.value]
             drivers = {}
             for driver in view["drivers"]:
                 drivers.setdefault(driver["factor"], driver)
             view["drivers"] = list(drivers.values())[:2]
             bounds = view["target_range"]
-            if tenor == "curve" or not bounds or len(bounds) != 2 or bounds[0] >= bounds[1]:
+            intervals = [[float(low), float(high)] for low, high in YIELD_INTERVAL.findall(source)]
+            if tenor == "curve" or not bounds or bounds not in intervals or bounds[0] >= bounds[1]:
                 view["target_range"] = None
         views.append(TenorView(tenor=tenor, evidence_page=page, evidence_quote=quote, **view))
     return ReportExtraction(
