@@ -36,16 +36,42 @@ INSTRUMENTS = ["国债","广义利率债","国债期限利差","政金债","地�
 STATEMENTS = ["作者预测","作者策略","历史复盘","机构交易观察","不明"]
 ROLES = ["预测区间","单点预测","相对变动bp","阻力或支撑","入场条件","历史或现值","无数字"]
 ACTIONS = VIEW["action"]["enum"] + ["维持久期","未给明确操作"]
-SELECTION = obj({"broker":TEXT,"series":TEXT,"report_date":TEXT,"candidates":array(obj({
-    "tenor":VIEW["tenor"],"instrument":enum(INSTRUMENTS),"source_id":TEXT,
-    "context_ids":array(TEXT),"claim":TEXT}))})
-INTERPRETATION = obj({"decisions":array(obj({
-    "candidate": {"type":"integer"},"supported":{"type":"boolean"},"reason":TEXT,
+DECISION = obj({
+    "supported":{"type":"boolean"},"reason":TEXT,
     "instrument":enum(INSTRUMENTS),"statement":enum(STATEMENTS),"tenor":VIEW["tenor"],
     "raw_tenor":TEXT,"primary_id":TEXT,"direction":VIEW["direction"],"action":enum(ACTIONS),
     "number_role":enum(ROLES),"low":NULL_NUMBER,"high":NULL_NUMBER,
     "number_note":TEXT,"cond":TEXT,"logic":TEXT,"risk":TEXT,
-    "drivers":VIEW["drivers"],"horizon":VIEW["horizon"]}))})
+    "drivers":VIEW["drivers"],"horizon":VIEW["horizon"]})
+
+# Retrieve an overinclusive set per bucket. Only the two model readings determine meaning.
+MENTIONS = {
+    "短端(1-3Y)":r"短端|短债|(?:[123一二三](?:年|y))",
+    "中端(5-7Y)":r"中端|(?:[567五六七](?:年|y))",
+    "10Y国债":r"(?:10|十)(?:年|y)|十年期",
+    "30Y超长债":r"(?:30|三十)(?:年|y)|超长",
+    "曲线形态":r"曲线|期限利差|(?:30|三十)[至—–~-](?:10|十)|趋平|走陡",
+}
+STRATEGY = re.compile(r"或|预计|预测|看好|认为|建议|维持|配置|仍|可能|空间|适合|关注|布局|平台|优选|观望|机会|阻力|波段|前瞻|风险")
+
+def retrieval(spans):
+    catalog={}
+    choices={}
+    for tenor,pattern in MENTIONS.items():
+        scored=[]
+        for i,(key,sentence) in enumerate(spans.items()):
+            if not re.search(pattern,sentence,re.I):
+                continue
+            signals=len(set(STRATEGY.findall(sentence)))
+            score=min(signals,5)+int(key.startswith("P1S"))*2
+            if len(sentence)<10 or not signals or re.search(r"数据来源|免责声明",sentence):
+                continue
+            scored.append((-score,i,key))
+        keys=[key for _,_,key in sorted(scored)[:24]]
+        choices[tenor]=keys
+        for key in keys:
+            catalog[key]=spans[key]
+    return catalog,choices
 
 PICK = """阅读真实研报，先索引证据，暂不打分。随附的 P页-S段 是程序生成的单页连续片段。
 每个有支持的期限桶列一条综合候选。主证据选可直接支撑作者预测或操作的片段，可补充至多三处上下文，
@@ -103,6 +129,8 @@ def project(dec, evidence, pages):
     key=dec["primary_id"]
     if key not in evidence: return None,"证据编号不匹配"
     quote=evidence[key]
+    if not re.search(MENTIONS[dec["tenor"]],quote,re.I):
+        return None,"主引文缺该期限或曲线指称"
     page=int(key.split("S")[0][1:])
     if quote not in pages[page-1]: raise ValueError("Evidence page mismatch")
     low,high=dec["low"],dec["high"]
@@ -126,25 +154,40 @@ def project(dec, evidence, pages):
 
 def analyze(client,pdf,broker,date):
     spans,pages=spans_for(pdf)
+    catalog,choices=retrieval(spans)
+    pick_fields={t:obj({"source_id":enum(["无"]+ids),"context_ids":array(TEXT),"claim":TEXT}) for t,ids in choices.items()}
     upload=client.files.create(file=("weekly.pdf",pdf,"application/pdf"),purpose="user_data")
     try:
-        picks,first=invoke(client,"select_evidence",SELECTION,PICK,[
+        picks,first=invoke(client,"select_evidence",obj({"series":TEXT,"buckets":obj(pick_fields)}),
+            PICK+" 每桶唯一选择，主句必须出现该期限或曲线并直接表达判断，缺失选无。优先正文完整策略讨论。只有覆盖预期品种才选。",[
             {"type":"file","file":{"file_id":upload.id}},
-            {"type":"text","text":"原文索引\n"+"\n".join(k+" "+s for k,s in spans.items())}])
+            {"type":"text","text":json.dumps({"券商":broker,"归档日期":date,"原句":catalog,"各桶可选编号":choices},ensure_ascii=False)}])
     finally:
         client.files.delete(upload.id)
-    if (picks["broker"],picks["report_date"])!=(broker,date): raise ValueError("Report identity mismatch")
+    # The archive checksum covers the ordered four PDFs and their IDs. Metadata comes from that manifest.
+    picks["candidates"]=[dict(tenor=t,**v) for t,v in picks["buckets"].items() if v["source_id"]!="无"]
     evidence=[]
     for c in picks["candidates"]:
-        ids=[c["source_id"]]+c["context_ids"][:3]
+        primary=c["source_id"]
+        page,number=primary.split("S")
+        nearby=[page+"S"+str(k) for k in range(int(number)-2,int(number)+3)]
+        ids=[primary]+nearby+[k for k in c["context_ids"][:4] if k in catalog]
         evidence.append({k:spans[k] for k in ids if k in spans})
-    inputs=[{"candidate":i,"proposal":c,"evidence":evidence[i]} for i,c in enumerate(picks["candidates"])]
-    judged,second=invoke(client,"review_evidence",INTERPRETATION,JUDGE,json.dumps(inputs,ensure_ascii=False))
-    indexes=sorted(x["candidate"] for x in judged["decisions"])
-    if indexes!=list(range(len(inputs))): raise ValueError("Review coverage mismatch")
+    inputs={c["tenor"]:{"proposal":c,"evidence":e} for c,e in zip(picks["candidates"],evidence,strict=True)}
+    decisions={}
+    for tenor,entry in inputs.items():
+        choices=list(entry["evidence"])
+        decisions[tenor]=obj(dict(DECISION["properties"],tenor=enum([tenor]),primary_id=enum(choices)))
+    requests=[first]
+    judged={}
+    if inputs:
+        judged,second=invoke(client,"review_evidence",obj(decisions),JUDGE+
+            " 两个不同收益率端点之间震荡属于预测区间。组合观点需明确组合层级。原句只允许泛类或历史行情时弃权。",json.dumps(inputs,ensure_ascii=False))
+        requests.append(second)
     accepted=[];audit=[]
-    for dec in sorted(judged["decisions"],key=lambda d:d["candidate"]):
-        idx=dec["candidate"]; v,reason=project(dec,evidence[idx],pages)
+    for idx,c in enumerate(picks["candidates"]):
+        dec=judged[c["tenor"]]
+        v,reason=project(dec,evidence[idx],pages)
         audit.append({"decision":dec,"evidence":evidence[idx],"rejection":reason})
         if v is not None: accepted.append(v)
     counts={v["tenor"]:sum(x["tenor"]==v["tenor"] for x in accepted) for v in accepted}
@@ -153,7 +196,7 @@ def analyze(client,pdf,broker,date):
     report={"broker":broker,"series":picks["series"],"report_date":date,
             "views":[v for v in accepted if counts[v["tenor"]]==1]}
     validate(report,CONTRACT)
-    return {"report":report,"picks":picks,"audit":audit,"requests":[first,second],"pages":len(pages)}
+    return {"report":report,"picks":picks,"audit":audit,"requests":requests,"pages":len(pages)}
 
 def main():
     drive=drive_service(); sources=read_trial_inputs(drive)
@@ -175,6 +218,7 @@ def main():
             print(broker,date,"candidates",len(item["audit"]),"accepted",len(report["views"]),flush=True)
         except Exception as exc:
             item["error"]=type(exc).__name__; item["error_code"]=getattr(exc,"code",None)
+            if type(exc) is ValueError: item["detail"]=str(exc)[:160]
             print("Report failed:",type(exc).__name__,item["error_code"],flush=True)
         receipt["reports"].append(item);save()
     with tempfile.TemporaryDirectory() as directory:
