@@ -8,6 +8,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+import zipfile
 import unicodedata
 from pathlib import Path
 
@@ -31,15 +33,31 @@ def canonical(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).translate(
         str.maketrans({"–": "-", "—": "-", "－": "-", "～": "~", "％": "%"})).lower()
 
-def find_source(drive, name):
-    files = drive.files().list(
-        q=f"trashed=false and mimeType='application/pdf' and name='{name}'",
-        fields="nextPageToken,files(id,name,size,md5Checksum)", pageSize=100,
-    ).execute(num_retries=2)
-    candidates = files.get("files", [])
-    if len(candidates) != 1 or files.get("nextPageToken"):
-        raise ValueError("Archive identity ambiguous or missing")
-    return candidates[0]
+def read_trial_inputs(drive):
+    # Hand off only the four original PDFs, through a private trial-owned file.
+    name = "four-weeklies-input-" + os.environ["GITHUB_RUN_ID"] + ".zip"
+    dest = drive.files().create(body={"name": name, "mimeType": "application/zip"},
+                                fields="id,shared").execute()
+    if dest.get("shared"):
+        raise RuntimeError("Trial inputs must be private")
+    print("Awaiting private trial inputs: " + name, flush=True)
+    for _ in range(150):
+        row = drive.files().get(fileId=dest["id"], fields="size,shared").execute(num_retries=2)
+        if row.get("shared"):
+            raise RuntimeError("Trial inputs must be private")
+        if int(row.get("size", 0)) > 0:
+            data = drive.files().get_media(fileId=dest["id"]).execute(num_retries=2)
+            if hashlib.sha256(data).hexdigest() != "5f1815dbc69800a739958e7cee4fa744e8775717f624afbf227067720b500cee":
+                raise ValueError("Trial input checksum mismatch")
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                ids = json.loads(archive.read("ids.json"))
+                result = [({"id": fid}, archive.read(f"{i}.pdf")) for i, fid in enumerate(ids)]
+            if len(result) != len(SAMPLES):
+                raise ValueError("Expected four PDFs")
+            drive.files().update(fileId=dest["id"], body={"trashed": True}).execute()
+            return result
+        time.sleep(4)
+    raise TimeoutError("Trial input handoff expired")
 
 def extract(client, pdf, prompt, schema):
     upload = client.files.create(file=("weekly.pdf", pdf, "application/pdf"), purpose="user_data")
@@ -86,7 +104,7 @@ def main():
     validator = Draft202012Validator(schema)
     builder = (ROOT/"pipeline/build_snapshot.py").read_bytes()
     drive=drive_service()
-    sources=[find_source(drive,name) for name,_,_ in SAMPLES]
+    sources=read_trial_inputs(drive)
     client=OpenAI(timeout=240.0,max_retries=1)
     review={"reports":[],"build_log":None}
     dest=drive.files().create(body={"name":"国债周报四篇-隔离试跑-"+os.environ.get("GITHUB_RUN_ID","local")+".json",
@@ -97,10 +115,9 @@ def main():
         raw=json.dumps(review,ensure_ascii=False,indent=2).encode()
         drive.files().update(fileId=dest["id"],media_body=MediaIoBaseUpload(io.BytesIO(raw),mimetype="application/json")).execute(num_retries=2)
     views={}
-    for (name,broker,date),source in zip(SAMPLES,sources):
+    for (name,broker,date),(source,pdf) in zip(SAMPLES,sources):
         receipt={"name":name}
         try:
-            pdf=download_cached(drive,source)
             pages=[canonical(p.extract_text() or "") for p in PdfReader(io.BytesIO(pdf)).pages]
             report,request,model=extract(client,pdf,prompt,schema)
             receipt.update(raw=report,request_id=request,model=model,sha256=hashlib.sha256(pdf).hexdigest(),
