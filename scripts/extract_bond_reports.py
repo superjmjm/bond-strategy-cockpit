@@ -113,7 +113,8 @@ TENOR_REFERENCE = {
     "10Y": re.compile(r"(?<!\d)(?:10|十)(?:年|y)"),
     "30Y": re.compile(r"(?<!\d)(?:30|三十)(?:年|y)"),
 }
-YIELD_INTERVAL = re.compile(r"(\d+(?:\.\d+)?)%?[-—–~～至到](\d+(?:\.\d+)?)%")
+YIELD_INTERVAL = re.compile(r"(?<![\d.−-])(\d+(?:\.\d+)?)%?[−‒–—~～‐‑至到-](\d+(?:\.\d+)?)%")
+YIELD_OUTLOOK = re.compile(r"预计|短期内|或维持|有望|区间震荡|运行区间")
 CURVE_REFERENCE = re.compile(r"曲线|期限利差|走陡|走平|相对价值|30[-—–/]10(?:y|年)|10[-—–/]30(?:y|年)")
 
 
@@ -158,6 +159,30 @@ def evidence_matches_tenor(tenor, text):
     return bool("国债" in text and TENOR_REFERENCE[tenor].search(text))
 
 
+def find_yield_evidence(tenor, bounds, page, quote, citations):
+    if bounds and (len(bounds) != 2 or bounds[0] >= bounds[1]):
+        return None, quote
+    candidates = dict.fromkeys([quote, *(text for p, text in citations.values() if p == page)])
+    supported = {}
+    for candidate in candidates:
+        source = normalized(candidate).lower()
+        if not evidence_matches_tenor(tenor, source):
+            continue
+        if not YIELD_OUTLOOK.search(source):
+            continue
+        for low, high in YIELD_INTERVAL.findall(source):
+            interval = (float(low), float(high))
+            if interval[0] < interval[1]:
+                supported.setdefault(interval, candidate)
+    if bounds:
+        match = supported.get(tuple(bounds))
+        return (bounds, match) if match else (None, quote)
+    if len(supported) == 1:
+        interval, match = next(iter(supported.items()))
+        return list(interval), match
+    return None, quote
+
+
 def resolve_indexed_report(report: ReportIdentity, citations) -> ReportExtraction:
     views = []
     for tenor, field in zip(TENORS, OPINION_FIELDS, strict=True):
@@ -177,10 +202,11 @@ def resolve_indexed_report(report: ReportIdentity, citations) -> ReportExtractio
             for driver in view["drivers"]:
                 drivers.setdefault(driver["factor"], driver)
             view["drivers"] = list(drivers.values())[:2]
-            bounds = view["target_range"]
-            intervals = [[float(low), float(high)] for low, high in YIELD_INTERVAL.findall(source)]
-            if tenor == "curve" or not bounds or bounds not in intervals or bounds[0] >= bounds[1]:
+            if tenor == "curve":
                 view["target_range"] = None
+            else:
+                bounds, quote = find_yield_evidence(tenor, view["target_range"], page, quote, citations)
+                view["target_range"] = bounds
         views.append(TenorView(tenor=tenor, evidence_page=page, evidence_quote=quote, **view))
     return ReportExtraction(
         broker=report.broker, report_date=report.report_date, report_title=report.report_title, views=views
@@ -191,11 +217,12 @@ def extract_single_pdf(client: OpenAI, path: Path, model: str) -> ReportExtracti
     citations = citation_spans(path)
     if not citations:
         raise ExtractionError("PDF 无可核对的文本")
+    options = citations
     if len(citations) > MAX_CITATIONS:
         prioritized = sorted(citations.items(), key=lambda item: not TREASURY_PHRASE.search(item[1][1]))
-        citations = dict(prioritized[:MAX_CITATIONS])
-    response_model = indexed_response_model(citations)
-    source_index = "\n".join(f"{key} {quote}" for key, (_, quote) in citations.items())
+        options = dict(prioritized[:MAX_CITATIONS])
+    response_model = indexed_response_model(options)
+    source_index = "\n".join(f"{key} {quote}" for key, (_, quote) in options.items())
     with path.open("rb") as source:
         upload = client.files.create(file=source, purpose="user_data")
     try:
