@@ -5,7 +5,7 @@ on:
       trigger_source:
         description: Dispatch origin
         type: choice
-        options: [manual, cloudflare, benchmark]
+        options: [manual, cloudflare, benchmark, publish-only]
         default: manual
       report_id:
         description: Optional NXNY report ID for single-report validation
@@ -14,7 +14,7 @@ on:
         description: Optional reviewed JSON for a report already archived in Drive
         type: string
   push:
-    paths: [index.html, dashboard_data.json]
+    paths: [index.html, dashboard_data.json, .github/workflows/update_dashboard.yml]
   schedule:
     - cron: '17 0 * * *' # 北京时间 08:17
     - cron: '17 4 * * *' # 北京时间 12:17
@@ -34,7 +34,7 @@ jobs:
       github.event_name != 'push' && github.ref_name == github.event.repository.default_branch &&
       (inputs.reviewed_extraction == '' || (github.event_name == 'workflow_dispatch' &&
       inputs.trigger_source == 'manual' && inputs.report_id != '')) &&
-      inputs.trigger_source != 'benchmark' &&
+      inputs.trigger_source != 'benchmark' && inputs.trigger_source != 'publish-only' &&
       (github.event_name != 'schedule' || (vars.SCHEDULER == 'github' &&
       github.event.schedule != '7 10 * * 1-5')) &&
       (inputs.trigger_source != 'cloudflare' || (vars.SCHEDULER == 'cloudflare' && !inputs.report_id))
@@ -182,33 +182,75 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-  pages:
+  pages-package:
     needs: [update, benchmark]
     if: >-
       always() && !cancelled() && vars.DEPLOY_GITHUB_PAGES == 'true' &&
       github.ref_name == github.event.repository.default_branch &&
       (github.event_name == 'push' || needs.update.outputs.changed == 'true' ||
       needs.benchmark.outputs.changed == 'true' ||
-      (github.event_name == 'workflow_dispatch' && needs.update.result == 'success'))
+      (github.event_name == 'workflow_dispatch' &&
+      (inputs.trigger_source == 'publish-only' || needs.update.result == 'success')))
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact_id }}
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Stage only public files
+        id: package
+        run: |
+          mkdir -p "$RUNNER_TEMP/bond-public"
+          cp index.html dashboard_data.json "$RUNNER_TEMP/bond-public/"
+          echo "artifact_name=github-pages-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-pages-artifact@v4
+        id: upload
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ runner.temp }}/bond-public
+          retention-days: 1
+
+  pages:
+    needs: pages-package
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-      - name: Stage only public files
+      - name: Wait for the uploaded Pages artifact
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.pages-package.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ needs.pages-package.outputs.artifact_name }}
         run: |
-          mkdir -p "$RUNNER_TEMP/bond-public"
-          cp index.html dashboard_data.json "$RUNNER_TEMP/bond-public/"
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: ${{ runner.temp }}/bond-public
-          retention-days: 1
+          if [[ ! "$ARTIFACT_ID" =~ ^[0-9]+$ || -z "$ARTIFACT_NAME" ]]; then
+            echo '::error::The Pages upload did not return an artifact ID and name.'
+            exit 1
+          fi
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error --max-time 5 \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'Accept: application/vnd.github+json' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=$ARTIFACT_NAME" | \
+              jq -e --argjson id "$ARTIFACT_ID" --arg name "$ARTIFACT_NAME" \
+                'any(.artifacts[]; .id == $id and .name == $name and .expired == false)' > /dev/null; then
+              echo "Pages artifact $ARTIFACT_NAME ($ARTIFACT_ID) is visible."
+              exit 0
+            fi
+            if (( attempt < 12 )); then sleep 5; fi
+          done
+          echo "::error::Pages artifact $ARTIFACT_NAME ($ARTIFACT_ID) did not become visible."
+          exit 1
       - uses: actions/deploy-pages@v4
         id: deploy
+        with:
+          artifact_name: ${{ needs.pages-package.outputs.artifact_name }}
