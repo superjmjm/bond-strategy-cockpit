@@ -5,13 +5,15 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model, field_validator, model_validator
 
 if __package__:
     from .report_scope import covered_broker, weekly_broker
@@ -102,19 +104,21 @@ class ReportExtraction(ReportIdentity):
         return self
 
 
-class IndexedOpinion(Opinion):
-    evidence_id: str | None
-
-
-class IndexedReport(ReportIdentity):
-    short_end: IndexedOpinion
-    intermediate: IndexedOpinion
-    ten_year: IndexedOpinion
-    thirty_year: IndexedOpinion
-    curve: IndexedOpinion
-
-
 OPINION_FIELDS = ("short_end", "intermediate", "ten_year", "thirty_year", "curve")
+TREASURY_PHRASE = re.compile(r"国债|期限利差|收益率曲线|走陡|走平")
+MAX_CITATIONS = 700
+
+
+class ExtractionError(ValueError):
+    """A concise diagnostic safe for the public workflow log."""
+
+
+def indexed_response_model(citations):
+    allowed = Enum("PdfCitation", {key: key for key in citations}, type=str)
+    opinion = create_model("IndexedOpinion", __base__=Opinion, evidence_id=(allowed | None, ...))
+    return create_model(
+        "IndexedReport", __base__=ReportIdentity, **{field: (opinion, ...) for field in OPINION_FIELDS}
+    )
 
 
 SYSTEM_PROMPT = """
@@ -139,19 +143,19 @@ marginal_change写文中明确的新变化，无则注明未说明。action及fa
 """
 
 
-def resolve_indexed_report(report: IndexedReport, citations) -> ReportExtraction:
+def resolve_indexed_report(report: ReportIdentity, citations) -> ReportExtraction:
     views = []
     for tenor, field in zip(TENORS, OPINION_FIELDS, strict=True):
         opinion = getattr(report, field)
         view = opinion.model_dump(exclude={"evidence_id"})
         page, quote = None, ""
-        if opinion.stance == "unstated":
-            view.update(drivers=[], target_range=None, marginal_change="未明确提及",
-                        action="未明确提及", falsification="未明确提及")
+        if opinion.stance == "unstated" or opinion.evidence_id is None:
+            if opinion.stance != "unstated":
+                LOG.warning("%s 无可核对证据，保留为未表态", tenor)
+            view.update(stance="unstated", drivers=[], target_range=None,
+                        marginal_change="未明确提及", action="未明确提及", falsification="未明确提及")
         else:
-            if opinion.evidence_id not in citations:
-                raise ValueError(f"Invalid source citation for {tenor}")
-            page, quote = citations[opinion.evidence_id]
+            page, quote = citations[opinion.evidence_id.value]
             drivers = {}
             for driver in view["drivers"]:
                 drivers.setdefault(driver["factor"], driver)
@@ -168,7 +172,11 @@ def resolve_indexed_report(report: IndexedReport, citations) -> ReportExtraction
 def extract_single_pdf(client: OpenAI, path: Path, model: str) -> ReportExtraction:
     citations = citation_spans(path)
     if not citations:
-        raise ValueError("PDF has no extractable text for evidence verification")
+        raise ExtractionError("PDF 无可核对的文本")
+    if len(citations) > MAX_CITATIONS:
+        prioritized = sorted(citations.items(), key=lambda item: not TREASURY_PHRASE.search(item[1][1]))
+        citations = dict(prioritized[:MAX_CITATIONS])
+    response_model = indexed_response_model(citations)
     source_index = "\n".join(f"{key} {quote}" for key, (_, quote) in citations.items())
     with path.open("rb") as source:
         upload = client.files.create(file=source, purpose="user_data")
@@ -180,14 +188,16 @@ def extract_single_pdf(client: OpenAI, path: Path, model: str) -> ReportExtracti
             )},
         ]
         result = client.responses.parse(
-            model=model, temperature=0.1, store=False, text_format=IndexedReport,
+            model=model, temperature=0.1, store=False, text_format=response_model,
             input=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": content},
             ],
         )
-        if result.status != "completed" or result.output_parsed is None:
-            raise ValueError(f"无完整结构化输出（{result.status}）")
+        if result.status != "completed":
+            raise ExtractionError("模型响应未完成")
+        if result.output_parsed is None:
+            raise ExtractionError("模型未返回结构化正文")
         return resolve_indexed_report(result.output_parsed, citations)
     finally:
         try:
@@ -322,10 +332,13 @@ def run():
                 LOG.warning("跳过范围外或署名不一致的研报")
                 continue
             if date.fromisoformat(report.report_date) > now.date():
-                raise ValueError("研报日期晚于运行日")
+                raise ExtractionError("研报日期晚于运行日")
             records.extend(flatten(report, digest, path.name, data))
             seen.add(digest)
             success += 1
+        except ExtractionError as error:
+            failed += 1
+            LOG.error("跳过失败 PDF（%s）", error)
         except ValidationError as error:
             failed += 1
             error_types = sorted({item["type"] for item in error.errors(include_input=False)})
