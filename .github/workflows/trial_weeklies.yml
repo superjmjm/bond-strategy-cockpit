@@ -8,6 +8,7 @@ on:
       - 'schemas/data_contract.md'
       - 'pipeline/build_snapshot.py'
       - 'pilot/replay_weeklies.py'
+      - 'pilot/round_two.py'
       - '.github/workflows/trial_weeklies.yml'
 permissions:
   contents: read
@@ -30,7 +31,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile pilot/replay_weeklies.py
+          python -m py_compile pilot/replay_weeklies.py pilot/round_two.py
           for input in schemas/extraction_prompt.md schemas/view_extraction.schema.json schemas/data_contract.md pipeline/build_snapshot.py; do
             if [[ ! -s "$input" ]]; then
               echo 'Awaiting original handoff files. Extraction has not started.'
@@ -50,4 +51,4 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
-        run: python pilot/replay_weeklies.py
+        run: python pilot/round_two.py
