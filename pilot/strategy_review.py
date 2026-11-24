@@ -74,10 +74,11 @@ def reconcile(digest, spans, raw, parsed, cards, portfolio):
             indexed.append((match["id"], match["clause"], rec["judgment_id"]))
     for card in cards.values():
         for obs in (card or {}).get("observations", []):
-            uid = hashlib.sha256(encode([digest, card["tenor"], obs["subject"], obs["predicate"],
-                                         obs.get("quote")]).encode()).hexdigest()
+            quote = obs.get("quote") or obs["sentence"]
+            uid = hashlib.sha256(encode([digest, card["tenor"], obs.get("subject"), obs.get("predicate"),
+                                         quote]).encode()).hexdigest()
             obs["judgment_id"] = uid
-            indexed.extend((c["id"], obs["quote"], uid) for c in obs["citations"])
+            indexed.extend((c["id"], quote, uid) for c in (obs.get("citations") or [obs]))
     kept = []
     references = {}
     for f in portfolio:
@@ -112,7 +113,7 @@ def reconcile(digest, spans, raw, parsed, cards, portfolio):
             elif any(f.get("id")==key and f.get("quote")==q for f in kept):
                 reason = "已保留组合证据"
             elif any(c["id"]==key and f.get("quote")==q for card in cards.values() if card
-                     for f in card["conditions"] for c in f.get("citations", [])):
+                     for f in card["conditions"] for c in (f.get("citations") or [f])):
                 reason = "已保留条件"
             else:
                 reason = "未形成独立判断"
