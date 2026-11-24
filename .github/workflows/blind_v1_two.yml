@@ -46,18 +46,39 @@ jobs:
           try:
               with tempfile.TemporaryDirectory() as td:
                   d=Path(td); manifest=[]
-                  for i,(identity,pdfhash,broker,day) in enumerate(samples):
-                      token=None
-                      while True:
-                          resp=drive.files().list(q="trashed=false and mimeType='application/pdf' and name contains '"+broker+"'",fields='nextPageToken,files(id,size,md5Checksum)',pageSize=1000,pageToken=token).execute(num_retries=2)
-                          found=next((x for x in resp['files'] if h(x['id'])==identity),None)
-                          token=resp.get('nextPageToken')
-                          if found or not token: break
-                      if not found: raise FileNotFoundError('Frozen PDF unavailable to runner: '+str(i+1))
-                      data=download_cached(drive,found)
-                      assert hashlib.sha256(data).hexdigest()==pdfhash
-                      path=d/(str(i)+'.pdf');path.write_bytes(data)
-                      manifest.append(dict(pdf=str(path),broker=broker,source=found['id'],day=day))
+                  import time, zipfile
+                  from googleapiclient.errors import HttpError
+                  stage=drive.files().create(body={'name':'blind-v1-input-'+run+'.zip','mimeType':'application/zip'},fields='id,parents,shared,ownedByMe').execute()
+                  assert stage['ownedByMe'] and not stage.get('shared') and stage['parents']==prior['parents']
+                  receipt.update(state='awaiting_verified_inputs',stage=stage['id']);save()
+                  try:
+                      for _ in range(120):
+                          obj=drive.files().get(fileId=stage['id'],fields='size,shared').execute(num_retries=2)
+                          if obj.get('shared'): raise ValueError('Staging file became shared')
+                          if int(obj.get('size',0)): break
+                          time.sleep(4)
+                      else: raise TimeoutError('Private handoff timed out')
+                      bundle=drive.files().get_media(fileId=stage['id']).execute(num_retries=2)
+                      assert hashlib.sha256(bundle).hexdigest()=='13ed61e44b71130d0a19070245aa6d527b333577d6340e218f75dbab22d041bc'
+                      with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                          meta=json.loads(archive.read('transfer.json')); checks={}
+                          for check in meta['checks']:
+                              try:
+                                  obj=drive.files().get(fileId=check['id'],supportsAllDrives=True,fields='id,mimeType,shortcutDetails(targetId)').execute(num_retries=2)
+                                  checks[check['label']]={'http':200,'mime':obj['mimeType'],'target':obj.get('shortcutDetails',{}).get('targetId')}
+                              except HttpError as err: checks[check['label']]={'http':err.resp.status}
+                          receipt['direct_access']=checks
+                          receipt['reported_scopes']=list(getattr(getattr(drive._http,'credentials',None),'granted_scopes',None) or [])
+                          save()
+                          for i,(identity,pdfhash,broker,day) in enumerate(samples):
+                              entry=meta['rows'][i]; fid=entry['id']
+                              assert h(fid)==identity
+                              data=archive.read(str(i)+'.pdf')
+                              assert hashlib.sha256(data).hexdigest()==pdfhash
+                              path=d/(str(i)+'.pdf');path.write_bytes(data)
+                              manifest.append(dict(pdf=str(path),broker=broker,source=fid,day=day))
+                  finally:
+                      drive.files().update(fileId=stage['id'],body={'trashed':True}).execute(num_retries=2)
                   m=d/'manifest.json';m.write_text(json.dumps(manifest))
                   receipt['state']='reading';save()
                   cmd=[sys.executable,'pilot/unified.py',str(m),'--cache',str(d/'cache.db')]
