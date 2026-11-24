@@ -1,0 +1,33 @@
+name: Verify the official Treasury benchmark
+on:
+  push:
+    branches: ['feat/official-treasury-benchmark']
+    paths: ['.github/workflows/verify_benchmark_once.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch the official curve and verify an isolated write
+        run: |
+          cp dashboard_data.json "$RUNNER_TEMP/before.json"
+          python scripts/update_benchmark.py
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          old = json.loads((Path(os.environ["RUNNER_TEMP"]) / "before.json").read_text())
+          new = json.loads(Path("dashboard_data.json").read_text())
+          changed = {key for key in set(old) | set(new) if old.get(key) != new.get(key)}
+          assert changed == {"benchmark_yields", "benchmark_as_of", "benchmark_note", "benchmark_source_url"}, changed
+          assert set(new["benchmark_yields"]) == {"1-3Y", "5-7Y", "10Y", "30Y"}
+          print("Four points share the official transaction date; the research records and timestamp match before and after.")
+          PY
