@@ -216,6 +216,7 @@ jobs:
 
   pages:
     needs: pages-package
+    if: always() && !cancelled() && needs.pages-package.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       actions: read
