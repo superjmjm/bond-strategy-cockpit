@@ -34,15 +34,15 @@ dialog::backdrop{background:#12283f55}#drawer{box-shadow:-7px 0 24px #14315218}.
 </head>
 <body><main>
 <header class="mast"><div><div class="brand">Bond Strategy Cockpit</div><h1>国债卖方策略决策驾驶舱</h1>
-<p class="sub">数据更新时间 <time id="updatedAt">—</time> <span id="mode" class="state"></span></p></div>
+<p class="sub">研报更新时间 <time id="updatedAt">—</time> <span id="mode" class="state"></span></p></div>
 <div class="controls" id="filters"></div></header>
 <div id="status" class="card status" role="status" aria-live="polite">正在读取看板数据…</div>
 <div id="dashboard" hidden>
 <section class="card radar"><div class="section-head"><h2>本周边际雷达</h2><small id="week"></small></div><div class="chips" id="radarStrip"></div></section>
-<div class="grid"><section class="card"><div class="section-head"><h2>国债收益率曲线与卖方目标区间</h2><div class="legend"><span><i class="line"></i>现券基准</span><span><i class="band"></i>目标区间</span></div></div>
-<figure><svg id="yieldChart" viewBox="0 0 600 215" aria-label="各期限现券收益率与目标区间，单位百分比"></svg><figcaption id="chartNote" class="note"></figcaption></figure></section>
+<div class="grid"><section class="card"><div class="section-head"><h2>国债收益率曲线与卖方目标区间</h2><div class="legend"><span><i class="line"></i>曲线基准</span><span><i class="band"></i>目标区间</span></div></div>
+<figure><svg id="yieldChart" viewBox="0 0 600 215" aria-label="各期限国债曲线基准与目标区间，单位百分比"></svg><figcaption id="chartNote" class="note"></figcaption></figure></section>
 <section class="card"><div class="section-head"><h2>四因子驱动热力图</h2><small>对债价的净影响</small></div><div class="scroll" id="heatmap"></div><p class="note">每家每因子一票。绿为净利多，红为净利空，横线表示无观点。</p></section></div>
-<section class="card matrix"><div class="section-head"><h2>国债期限策略矩阵</h2><small>每家取最新一期 · 未表态剔出分母</small></div><div class="scroll"><table><thead><tr><th>期限 / 现券基准</th><th>多空温度计</th><th>主导逻辑标签</th><th>本周关键边际</th><th>代表性交投建议与点位</th></tr></thead><tbody id="matrixBody"></tbody></table></div></section>
+<section class="card matrix"><div class="section-head"><h2>国债期限策略矩阵</h2><small>每家取最新一期 · 未表态剔出分母</small></div><div class="scroll"><table><thead><tr><th>期限 / 曲线基准</th><th>多空温度计</th><th>主导逻辑标签</th><th>本周关键边际</th><th>代表性交投建议与点位</th></tr></thead><tbody id="matrixBody"></tbody></table></div></section>
 </div></main>
 <dialog id="drawer" aria-labelledby="drawerTitle"><div class="dhead"><div class="row between"><div><small>券商明细与原文溯源</small><h2 id="drawerTitle"></h2></div><button class="close" data-close="drawer" aria-label="关闭明细">×</button></div><div class="controls" id="drawerFilters"></div></div><div id="drawerBody"></div></dialog>
 <dialog id="evidence" class="evidence" aria-labelledby="sourceTitle"><div class="row between"><small id="sourceKind"></small><button class="close" data-close="evidence" aria-label="关闭原文">×</button></div><h3 id="sourceTitle"></h3><p id="sourceMeta" class="sub"></p><blockquote id="quote"></blockquote></dialog>
@@ -51,6 +51,8 @@ dialog::backdrop{background:#12283f55}#drawer{box-shadow:-7px 0 24px #14315218}.
 "use strict";
 const $ = id => document.getElementById(id);
 const TENORS = {"1-3Y":"短端 (1–3Y)","5-7Y":"中端 (5–7Y)","10Y":"长端 (10Y)","30Y":"超长端 (30Y)",curve:"曲线结构"};
+const BENCHMARK_TENORS = {"1-3Y":"2Y","5-7Y":"7Y","10Y":"10Y","30Y":"30Y"};
+const BENCHMARK_ORIGIN = "https://yield.chinabond.com.cn";
 const FACTORS = {liquidity:"资金与央行",macro:"基本面政策",supply:"供需与发行",institution:"机构与情绪"};
 const STANCES = {bullish:"偏多",neutral:"中性",cautious:"谨慎",bearish:"偏空",unstated:"未表态"};
 const DELTAS = {upgrade:"上调",downgrade:"下调",unchanged:"持平",new:"首次表态",unstated:"未表态"};
@@ -100,6 +102,8 @@ function renderRadar(){
 }
 function renderChart(records){
   const terms=Object.keys(TENORS).slice(0,4), values=terms.map(t=>data.benchmark_yields[t]);
+  const hasOfficialCurve=typeof data.benchmark_as_of==="string" && /^\d{4}-\d{2}-\d{2}$/.test(data.benchmark_as_of);
+  const chartTenors=terms.map(t=>hasOfficialCurve && BENCHMARK_TENORS[t]!==t?t+"（"+BENCHMARK_TENORS[t]+"）":t);
   const bands=terms.map(t=>{
     const ranges=records.filter(r=>r.tenor===t && r.stance!=="unstated" && validRange(r.target_range)).map(r=>r.target_range);
     return ranges.length ? [Math.min(...ranges.map(r=>r[0])),Math.max(...ranges.map(r=>r[1]))] : null;
@@ -122,11 +126,21 @@ function renderChart(records){
     if(b) svg+='<path d="M'+x(i)+' '+y(b[0])+' V'+y(b[1])+' m-5 0 h10 M'+(x(i)-5)+' '+y(b[0])+' h10" fill="none" stroke="#8aafd5" stroke-width="2"/>';
     if(i && Number.isFinite(values[i-1]) && Number.isFinite(v)) svg+='<path d="M'+x(i-1)+' '+y(values[i-1])+' L'+x(i)+' '+y(v)+'" fill="none" stroke="#295fa8" stroke-width="2.5"/>';
     if(Number.isFinite(v)) svg+='<circle cx="'+x(i)+'" cy="'+y(v)+'" r="4" fill="#295fa8"/><text x="'+x(i)+'" y="'+(y(v)-9)+'" text-anchor="middle" fill="#244d7e">'+v.toFixed(2)+'</text>';
-    svg+='<text x="'+x(i)+'" y="205" text-anchor="middle">'+t+'</text>';
+    svg+='<text x="'+x(i)+'" y="205" text-anchor="middle">'+chartTenors[i]+'</text>';
   }
-  for(let i=0;i<4;i++) svg+='<rect data-tenor="'+terms[i]+'" tabindex="0" role="button" aria-label="'+terms[i]+'券商明细" x="'+(x(i)-38)+'" y="2" width="76" height="211" fill="transparent" cursor="pointer"><title>'+terms[i]+' · 现券 '+(Number.isFinite(values[i])?values[i].toFixed(2)+"%":"缺失")+' · 目标 '+(bands[i]?bands[i].map(v=>v.toFixed(2)).join("–")+"%":"未给区间")+'</title></rect>';
+  for(let i=0;i<4;i++) svg+='<rect data-tenor="'+terms[i]+'" tabindex="0" role="button" aria-label="'+terms[i]+'券商明细" x="'+(x(i)-38)+'" y="2" width="76" height="211" fill="transparent" cursor="pointer"><title>'+chartTenors[i]+' · 曲线基准 '+(Number.isFinite(values[i])?values[i].toFixed(2)+"%":"缺失")+' · 目标 '+(bands[i]?bands[i].map(v=>v.toFixed(2)).join("–")+"%":"未给区间")+'</title></rect>';
   $("yieldChart").innerHTML=svg+'</g>';
-  $("chartNote").textContent=(data.benchmark_note || "手工维护基准")+" · 单位 %。色带取各家目标下沿最低值至上沿最高值。";
+  const note=$("chartNote");
+  note.replaceChildren();
+  const source=document.createElement(hasOfficialCurve && typeof data.benchmark_source_url==="string" &&
+    data.benchmark_source_url.startsWith(BENCHMARK_ORIGIN+"/")?"a":"span");
+  if(source.tagName==="A"){
+    source.href=data.benchmark_source_url; source.target="_blank"; source.rel="noopener noreferrer";
+  }
+  source.textContent=data.benchmark_note || "手工维护基准";
+  note.append(source);
+  if(hasOfficialCurve) note.append(" · 数据日期 "+data.benchmark_as_of);
+  note.append(" · 单位 %。色带取各家目标下沿最低值至上沿最高值。");
 }
 function renderHeat(records){
   $("heatmap").innerHTML='<table class="heat"><thead><tr><th>期限</th>'+Object.values(FACTORS).map(f=>'<th>'+f+'</th>').join("")+'</tr></thead><tbody>'+

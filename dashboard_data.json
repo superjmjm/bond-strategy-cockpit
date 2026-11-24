@@ -3,12 +3,12 @@
   "demo_mode": false,
   "updated_at": "2026-11-23T21:09:53+08:00",
   "benchmark_yields": {
-    "1-3Y": 1.52,
-    "5-7Y": 1.88,
-    "10Y": 2.12,
-    "30Y": 2.31
+    "1-3Y": 1.24,
+    "5-7Y": 1.44,
+    "10Y": 1.59,
+    "30Y": 2.05
   },
-  "benchmark_note": "模拟基准 · 手工维护，尚未接入行情",
+  "benchmark_note": "中债国债到期收益率曲线（财政部专栏）",
   "broker_aliases": {},
   "broker_styles": {},
   "records": [
@@ -1408,5 +1408,7 @@
       "stance_delta": "unstated"
     }
   ],
-  "radar_alerts": []
+  "radar_alerts": [],
+  "benchmark_as_of": "2026-11-23",
+  "benchmark_source_url": "https://yield.chinabond.com.cn/cbweb-czb-web/czb/moreInfo?locale=cn_ZH&nameType=1"
 }
