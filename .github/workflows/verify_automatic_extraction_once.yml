@@ -1,4 +1,4 @@
-name: Replay automatic extraction with fixed citation choices
+name: Replay and compare all five Treasury views
 on:
   push:
     branches: ['fix/ground-automatic-quotations']
@@ -59,6 +59,8 @@ jobs:
           curve_text = curve["action"] + curve["marginal_change"] + curve["evidence_quote"]
           assert curve["stance"] != "unstated" and curve["evidence_quote"], "curve evidence missing"
           assert any(word in curve_text for word in ("收窄","压缩","走平","收敛")), "curve direction differs from the reviewed report"
-          assert rows["30Y"]["stance"] == "unstated", "relative-value evidence cannot classify outright 30Y"
-          print("The 10Y yield interval and relative curve view match the reviewed report.")
+          for tenor in ("1-3Y", "5-7Y", "30Y"):
+              row = rows[tenor]
+              assert row["stance"] == "unstated" and row["target_range"] is None and not row["evidence_quote"], f"{tenor} contains an unsupported outright view"
+          print("All five views match the reviewed report, including the three unstated outright tenors.")
           PY
