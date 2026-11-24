@@ -80,46 +80,50 @@ def integrate(cards, observations, source):
             conflict=len(decisions)>1,observations=[f for f in facts if f["role"]=="判断"],
             conditions=[f for f in facts if f["role"]!="判断"])
 
+def recover(pages,spans,raw,initial_cards):
+    cards=initial_cards.copy()
+    events=[]
+    pool=[]
+    inputs={x["id"] for items in raw.values() for x in items if x["id"] in spans}
+    # Stage 1 uses only the physical-page verified quoted substring.
+    for bucket,items in raw.items():
+        for x in items:
+            s=re.sub(r"\s+","",x["quote"])
+            if not s or s not in spans.get(x["id"],""):
+                continue
+            for f in inspect_sentence(x["id"],s,False):
+                if f["tenor"]!=bucket:
+                    pool.append(f)
+    for label,keys in [("回执改归",[]),("已摘原句拆分",sorted(inputs)),("空栏补读",sorted(set(spans)-inputs))]:
+        before={t for t,v in cards.items() if v}
+        needs={t for t in TENORS if t not in before}
+        curve=cards.get(CURVE)
+        if curve and "recovery" in curve and not curve["conditions"]:
+            needs.add(CURVE)
+        cues={SHORT:SHORT_BOND,LONG:re.compile(r"30[yY年]|三十年"),CURVE:PAIR}
+        reread=[]
+        for k in keys:
+            s=spans[k]
+            if label=="空栏补读" and not any(p.search(s) for t,p in cues.items() if t in needs):
+                continue
+            if label=="空栏补读":
+                reread.append(k)
+            pool.extend(f for f in inspect_sentence(k,s,True) if f["tenor"] in needs)
+        integrate(cards,pool,label)
+        after={t for t,v in cards.items() if v}
+        events.append(dict(stage=label,added=sorted(after-before),read_ids=reread))
+    for f in pool:
+        assert f["subject"] in f["sentence"] and f["predicate"] in f["sentence"] and f["sentence"] in pages[f["page"]-1]
+    assert all(cards[t]==initial_cards[t] for t in TENORS if initial_cards[t])
+    return cards,events
+
 def run(raw_receipt, base_receipt, archive):
     output=[]
     for i,(r,prior) in enumerate(zip(raw_receipt["reports"],base_receipt["reports"],strict=True)):
         pdf=archive.read(f"{i}.pdf")
         assert hashlib.sha256(pdf).hexdigest()==r["sha256"]==prior["sha256"] and r["raw"]==prior["raw"]
         pages,spans=pages_and_spans(pdf)
-        cards=prior["cards"].copy()
-        events=[]
-        pool=[]
-        inputs={x["id"] for items in r["raw"].values() for x in items if x["id"] in spans}
-        # Stage 1 uses only the physical-page verified quoted substring.
-        for bucket,items in r["raw"].items():
-            for x in items:
-                s=re.sub(r"\s+","",x["quote"])
-                if not s or s not in spans.get(x["id"],""):
-                    continue
-                for f in inspect_sentence(x["id"],s,False):
-                    if f["tenor"]!=bucket:
-                        pool.append(f)
-        for label,keys in [("回执改归",[]),("已摘原句拆分",sorted(inputs)),("空栏补读",sorted(set(spans)-inputs))]:
-            before={t for t,v in cards.items() if v}
-            needs={t for t in TENORS if t not in before}
-            curve=cards.get(CURVE)
-            if curve and "recovery" in curve and not curve["conditions"]:
-                needs.add(CURVE)
-            cues={SHORT:SHORT_BOND,LONG:re.compile(r"30[yY年]|三十年"),CURVE:PAIR}
-            reread=[]
-            for k in keys:
-                s=spans[k]
-                if label=="空栏补读" and not any(p.search(s) for t,p in cues.items() if t in needs):
-                    continue
-                if label=="空栏补读":
-                    reread.append(k)
-                pool.extend(f for f in inspect_sentence(k,s,True) if f["tenor"] in needs)
-            integrate(cards,pool,label)
-            after={t for t,v in cards.items() if v}
-            events.append(dict(stage=label,added=sorted(after-before),read_ids=reread))
-        for f in pool:
-            assert f["subject"] in f["sentence"] and f["predicate"] in f["sentence"] and f["sentence"] in pages[f["page"]-1]
-        assert all(cards[t]==prior["cards"][t] for t in TENORS if prior["cards"][t])
+        cards,events=recover(pages,spans,r["raw"],prior["cards"])
         output.append(dict(source=r["source"],sha256=r["sha256"],broker=r["broker"],day=r["day"],cards=cards,portfolio=prior["portfolio"],events=events))
     return output
 

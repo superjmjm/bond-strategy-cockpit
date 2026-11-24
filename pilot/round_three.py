@@ -58,6 +58,10 @@ def select(client, pdf, spans):
 
 def process(pdf, raw):
     pages, spans = pages_and_spans(pdf)
+    return process_spans(pages,spans,raw)
+
+
+def process_spans(pages,spans,raw):
     cards, portfolio, rejected = {}, [], []
     for tenor in (*TENORS,"组合层"):
         facts=[]

@@ -10,11 +10,9 @@ import tempfile
 from pathlib import Path
 
 from jsonschema import validate
-from openai import OpenAI
 from pypdf import PdfReader
-from googleapiclient.http import MediaIoBaseUpload
 
-from replay_weeklies import ROOT, SAMPLES, canonical, drive_service, read_trial_inputs
+ROOT = Path(__file__).resolve().parents[1]
 
 MODEL = "gpt-4.1-mini-2025-04-14"
 REFERENCE_SHA256 = "bb13f58c4e9185b6d4cdb8ecbb83d976e311a2224e4b836d0f3c5ef8a873358e"
@@ -136,6 +134,7 @@ def project(dec, evidence, pages):
     low,high=dec["low"],dec["high"]
     role=dec["number_role"]
     if role in ("预测区间","单点预测"):
+        from replay_weeklies import canonical
         nums={float(x) for x in re.findall(r"\d+(?:\.\d+)?",canonical(quote))}
         if low is None or high is None or low>high or low not in nums or high not in nums:
             return None,"目标数值未在主证据闭合"
@@ -199,6 +198,9 @@ def analyze(client,pdf,broker,date):
     return {"report":report,"picks":picks,"audit":audit,"requests":requests,"pages":len(pages)}
 
 def main():
+    from openai import OpenAI
+    from googleapiclient.http import MediaIoBaseUpload
+    from replay_weeklies import SAMPLES, drive_service, read_trial_inputs
     drive=drive_service(); sources=read_trial_inputs(drive)
     dest=drive.files().create(body={"name":"四篇周报-第二轮证据复核-"+os.environ["GITHUB_RUN_ID"]+".json",
         "mimeType":"application/json"},fields="id,shared").execute()
