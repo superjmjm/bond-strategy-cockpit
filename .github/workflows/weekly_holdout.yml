@@ -1,0 +1,86 @@
+name: Isolated V5-blind blind read from original archive
+on:
+  push:
+    branches: [trial/paragraph-v5-blind]
+    paths: ['.github/workflows/weekly_holdout.yml']
+permissions:
+  contents: read
+jobs:
+  first-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ec37bc3a7433fcb00f2e3bbf77455c4103682613
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -q -r pilot/requirements-unified.txt google-api-python-client requests
+      - name: Read two verified PDFs privately and replay
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+        shell: python
+        run: |
+          import sys,os
+          sys.path.insert(0,os.getcwd())
+          import hashlib,io,json,tempfile,subprocess
+          from pathlib import Path
+          from googleapiclient.http import MediaIoBaseUpload
+          from scripts.report_io import drive_service,download_cached
+          drive=drive_service()
+          def h(s): return hashlib.sha256(s.encode()).hexdigest()
+          # Validate a private existing trial receipt and its parent using file-scoped OAuth.
+          prior=drive.files().get(fileId='1wQF5QVVGO4gngUQ3GuP3rUvfAFXUou6M',fields='ownedByMe,shared,parents').execute()
+          assert prior['ownedByMe'] and not prior.get('shared') and len(prior['parents'])==1 and h(prior['parents'][0])=='ed4ba419f13cf234196e3958d1c6a82871a43fd075210b3574fe325540baec83'
+          run=os.environ['GITHUB_RUN_ID']
+          dest=drive.files().create(body={'name':'两篇盲测-V5-blind-原归档-'+run+'.json','mimeType':'application/json'},fields='id,shared,ownedByMe,parents').execute()
+          assert dest['ownedByMe'] and not dest.get('shared') and dest['parents']==prior['parents']
+          receipt=dict(run=run,baseline='ec37bc3a7433fcb00f2e3bbf77455c4103682613',reference_sha256='a536469964b7abe22678b80e96ca408e0c71b2fb6905d174058a905e080f0b11',state='starting')
+          def save():
+              drive.files().update(fileId=dest['id'],media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(receipt,ensure_ascii=False).encode()),mimetype='application/json')).execute(num_retries=2)
+          save()
+          samples=[["2ba97c48d4110f4c1f5672655b60d09bcc3938be30ad90965d5be7029c7b3f3d","8bba3a1c6c48cd2ab424590028dd152238eebd8b41a04ecc6b2cc4682544e9f0","兴业证券","2026-10-25"],["e01365590fa5a5845d1a36c1e8129bc6756b5f86a0f655b96b55c4be635dbe57","9ce9bd6316896dbf980eec92d116095883bb9bd905c36e5aa96babc257bd198b","国联民生证券","2026-10-18"]]
+          try:
+              with tempfile.TemporaryDirectory() as td:
+                  d=Path(td); manifest=[]
+                  from googleapiclient.errors import HttpError
+                  catalog=json.loads(drive.files().get_media(fileId='1OsUbDu_TdxCLeXG642rvvEJ8NKqoVzZV').execute())
+                  checks=[]
+                  for i,(identity,pdfhash,broker,day) in enumerate(samples):
+                      row=next(r for r in catalog['reports'] if r['sha256']==pdfhash)
+                      fid=row['pdf_id']
+                      assert h(fid)==identity
+                      trials=[]
+                      for existing in dict.fromkeys([fid]+row['pdf_candidates']):
+                          try:
+                              data=drive.files().get_media(fileId=existing,supportsAllDrives=True).execute(num_retries=2)
+                          except HttpError as err:
+                              trials.append(err.resp.status)
+                              continue
+                          assert hashlib.sha256(data).hexdigest()==pdfhash
+                          trials.append(200)
+                          path=d/(str(i)+'.pdf');path.write_bytes(data)
+                          manifest.append(dict(pdf=str(path),broker=broker,source=fid,day=day))
+                          break
+                      checks.append(trials)
+                  receipt['original_access']=checks;save()
+                  if len(manifest)!=len(samples):
+                      raise RuntimeError('Existing PDF access unavailable')
+                  m=d/'manifest.json';m.write_text(json.dumps(manifest))
+                  receipt['state']='reading';save()
+                  cmd=[sys.executable,'pilot/unified.py',str(m),'--cache',str(d/'cache.db')]
+                  out=d/'first.json'
+                  subprocess.run(cmd+['--output',str(out)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                  import base64, zlib, sqlite3
+                  db=sqlite3.connect(d/'cache.db');receipt['evidence_cache_sql_zlib_b64']=base64.b64encode(zlib.compress('\n'.join(db.iterdump()).encode())).decode();db.close()
+                  first=json.loads(out.read_bytes());receipt.update(state='first_saved',first=first);save()
+                  again=d/'replay.json';subprocess.run(cmd+['--offline','--output',str(again)],check=True)
+                  replay=json.loads(again.read_bytes())
+                  assert first['snapshot']==replay['snapshot'] and all(r['evidence_source']=='cache' for r in replay['reports'])
+                  receipt.update(state='completed',replay_identical=True);save()
+          except Exception as e:
+              receipt.update(state='failed',error=type(e).__name__,detail=str(e)[:180]);save()
+              raise SystemExit(1)
