@@ -1,0 +1,15 @@
+name: Verify anchored preview online
+on:
+  push:
+    branches: [verify/anchored-pages-1125]
+    paths: [.github/workflows/verify-anchored-preview.yml]
+permissions:
+  contents: read
+jobs:
+  online:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install 'playwright>=1.55,<2'
+      - run: python scripts/smoke_cockpit.py https://superjmjm.github.io/bond-strategy-cockpit/preview/ --isolated
