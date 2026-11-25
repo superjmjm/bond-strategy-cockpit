@@ -10,6 +10,7 @@ import tempfile
 
 from jsonschema import validate
 
+from paragraph_read import read_paragraphs
 from evidence_cards import cached_extract, connect, encode, ingest, snapshot
 from link_portfolio import links
 from strategy_review import reconcile
@@ -22,7 +23,7 @@ from round_two import MODEL
 def pipeline_id():
     root=Path(__file__).resolve().parent
     names=("unified.py","requirements-unified.txt","round_two.py","round_three.py","evidence_cards.py",
-           "recover_missing.py","link_portfolio.py","generic_duration.py","strategy_review.py","author_policy.py","../schemas/view_extraction.schema.json")
+           "recover_missing.py","link_portfolio.py","generic_duration.py","strategy_review.py","author_policy.py","paragraph_read.py","../schemas/view_extraction.schema.json")
     resources={n:(root/n).read_text(encoding="utf8") for n in names}
     return hashlib.sha256(encode(resources).encode()).hexdigest()
 
@@ -41,6 +42,13 @@ def execute(manifest, cache, seed, offline):
         raise ValueError("Expected a nonempty PDF manifest")
     reports=[]
     client=None
+    paragraph_views={}
+    def get_client():
+        nonlocal client
+        if client is None:
+            from openai import OpenAI
+            client=OpenAI(timeout=240,max_retries=1)
+        return client
     ledger=connect(":memory:")
     try:
         for row in records:
@@ -54,6 +62,8 @@ def execute(manifest, cache, seed, offline):
             pages,spans=pages_and_spans(pdf)
             if not spans:
                 raise ValueError("No physical-page text available for evidence verification")
+            paragraph_audit, views = read_paragraphs(digest,spans,cache,offline,get_client)
+            paragraph_views[digest] = views
             origin="cache"
             def read():
                 nonlocal origin,client
@@ -63,10 +73,8 @@ def execute(manifest, cache, seed, offline):
                 elif offline:
                     raise ValueError("Offline cache miss: "+digest)
                 else:
-                    from openai import OpenAI
-                    client=client or OpenAI(timeout=240,max_retries=1)
                     origin="model"
-                    value=select(client,pdf,spans)
+                    value=select(get_client(),pdf,spans)
                 raw,request=value
                 validate(raw,selection_schema())
                 if request["model"]!=MODEL or not request["id"]:
@@ -84,10 +92,10 @@ def execute(manifest, cache, seed, offline):
                     cards[tenor]=card
             portfolio, audit = reconcile(digest,spans,raw,parsed,cards,portfolio+unspecified_long_end(spans))
             ingest(ledger,source,digest,broker,day,cards,portfolio)
-            reports.append(dict(candidate_audit=audit,source=source,sha256=digest,broker=broker,day=day,request=request,
+            reports.append(dict(paragraph_read=paragraph_audit,candidate_audit=audit,source=source,sha256=digest,broker=broker,day=day,request=request,
                                 evidence_source=origin,recovery=events,verified_pages=len(pages)))
         return dict(pipeline_id=pipeline_id(),extractor_version=revision,model=MODEL,
-                    packages={p:version(p) for p in ("pypdf","jsonschema")},reports=reports,snapshot=snapshot(ledger))
+                    packages={p:version(p) for p in ("pypdf","jsonschema")},reports=reports,snapshot=dict(**snapshot(ledger),author_views=paragraph_views))
     finally:
         ledger.close()
         if client:
