@@ -13,7 +13,8 @@ from contract import STAGE1, STAGE2, SLOTS
 from prompts import S1,S2
 from source import context,index_pdf
 
-MODEL="gpt-4.1-2025-04-14"
+MODEL = "gpt-6.2-sol"
+REASONING_EFFORT = "medium"
 def encode(value):
     return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False)
 
@@ -23,16 +24,18 @@ def digest(value):
 def ask(model,stage,prompt,payload,schema):
     from openai import OpenAI
     with OpenAI(timeout=240,max_retries=0) as client:
-        response=client.chat.completions.create(model=model,temperature=0,
+        response=client.chat.completions.create(model=model,reasoning_effort=REASONING_EFFORT,
             messages=[{"role":"system","content":prompt},{"role":"user","content":encode(payload)}],
             response_format={"type":"json_schema","json_schema":{"name":stage,"strict":True,"schema":schema}})
     result=response.choices[0]
     if result.finish_reason!="stop" or result.message.refusal:
         raise ValueError(stage+" incomplete: "+result.finish_reason)
-    return json.loads(result.message.content),{"request_id":response.id,"model":response.model}
+    return json.loads(result.message.content),{"request_id":response.id,"model":response.model,
+            "requested_model":model,"reasoning_effort":REASONING_EFFORT,
+            "usage":response.usage.model_dump() if response.usage else None}
 
 def cached_call(db,model,stage,prompt,payload,schema,offline,invoke):
-    key=digest([model,stage,prompt,payload,schema])
+    key=digest([model,REASONING_EFFORT,stage,prompt,payload,schema])
     db.execute("BEGIN IMMEDIATE")
     try:
         row=db.execute("SELECT response,receipt FROM calls WHERE key=?",(key,)).fetchone()

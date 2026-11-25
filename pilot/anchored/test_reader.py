@@ -1,10 +1,10 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from jsonschema import ValidationError, validate
 from contract import SLOTS, STAGE2
-from reader import MODEL, finish, open_cache, read_index, targets
+from reader import MODEL, ask as model_request, finish, open_cache, read_index, targets
 from source import index_pdf
 
 ROWS = [dict(pid=f"P1-S{i}",page=1,text=t,heading="债市策略") for i,t in enumerate(
@@ -22,6 +22,19 @@ def card(**values):
     return base|values
 
 class ContractTests(unittest.TestCase):
+    def test_reasoning_request_and_receipt(self):
+        sdk = MagicMock()
+        call = sdk.OpenAI.return_value.__enter__.return_value.chat.completions.create
+        response = call.return_value
+        response.id, response.model, response.usage = "fixture", MODEL, None
+        answer = response.choices[0]
+        answer.finish_reason, answer.message.refusal, answer.message.content = "stop", None, "{}"
+        with patch.dict("sys.modules", {"openai":sdk}):
+            _, receipt = model_request(MODEL,"stage2","review",{},STAGE2)
+        self.assertEqual(call.call_args.kwargs["reasoning_effort"],"medium")
+        self.assertNotIn("temperature",call.call_args.kwargs)
+        self.assertEqual(receipt["reasoning_effort"],"medium")
+
     def test_all_required_null_slots_no_legacy_keys(self):
         validate(slots(),STAGE2)
         validate(slots(cgb_10y=card()),STAGE2)
@@ -73,7 +86,7 @@ class ContractTests(unittest.TestCase):
     def test_full_text_and_replay_empty_funding(self):
         calls=[]
         def ask(model,stage,prompt,payload,schema):
-            self.assertEqual(model,"gpt-4.1-2025-04-14")
+            self.assertEqual(model,"gpt-6.2-sol")
             self.assertEqual(payload["paragraphs"],ROWS)
             calls.append(stage)
             return ({"candidates":[]} if stage=="stage1" else slots()|{"report_category":"资金流动性周报"}),{}
