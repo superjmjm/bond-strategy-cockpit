@@ -10,6 +10,7 @@ import tempfile
 
 from jsonschema import validate
 
+from scoped_strategy import project_curve
 from ground_views import adjudicate, share_portfolio
 from paragraph_read import read_paragraphs
 from evidence_cards import cached_extract, connect, encode, ingest, snapshot
@@ -24,7 +25,7 @@ from round_two import MODEL
 def pipeline_id():
     root=Path(__file__).resolve().parent
     names=("unified.py","requirements-unified.txt","round_two.py","round_three.py","evidence_cards.py",
-           "recover_missing.py","link_portfolio.py","generic_duration.py","strategy_review.py","author_policy.py","paragraph_read.py","ground_views.py","../schemas/view_extraction.schema.json")
+           "recover_missing.py","link_portfolio.py","generic_duration.py","strategy_review.py","author_policy.py","paragraph_read.py","ground_views.py","scoped_strategy.py","../schemas/view_extraction.schema.json")
     resources={n:(root/n).read_text(encoding="utf8") for n in names}
     return hashlib.sha256(encode(resources).encode()).hexdigest()
 
@@ -93,6 +94,7 @@ def execute(manifest, cache, seed, offline):
                 if cards[tenor] is None:
                     cards[tenor]=card
             portfolio, audit = reconcile(digest,spans,raw,parsed,cards,portfolio+unspecified_long_end(spans))
+            project_curve(views,cards)
             portfolio = share_portfolio(views,portfolio)
             ingest(ledger,source,digest,broker,day,cards,portfolio)
             reports.append(dict(paragraph_read=paragraph_audit,candidate_audit=audit,source=source,sha256=digest,broker=broker,day=day,request=request,

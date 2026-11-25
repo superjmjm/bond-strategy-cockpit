@@ -3,15 +3,16 @@ import hashlib
 import re
 
 from evidence_cards import encode
+from scoped_strategy import CURVE, curve_windows, instrument_index, source_proposal
 
 SUBJECT = re.compile(
     r"(?:(?<![\d.])\d{1,2}(?:[-–至]\d{1,2})?(?:年(?:期)?|[Yy])(?:及以内)?(?:国债|地方债|政金债|利率债|利率)?"
-    r"(?:和\d+(?:年|Y)(?:国债)?利差)?|超长端利率|超长债|长端利率|短端利率|"
+    r"(?:和\d+(?:年|Y)(?:国债)?利差)?|超长端利率|超长端|超长债|长端利率|长端|利率债曲线|利率窄幅震荡|老券|新券|多头趋势|长端利率|短端利率|"
     r"长端交易敞口|债券组合|组合久期|平衡配置|债市|短期行情|期限利差)")
 OUTSIDE = re.compile(r"存单|信用|美债|美国|日本国债|德国国债|美元债|海外利率|美股|转债|期债|期货|合约|(?<![A-Z])TL|美联储")
 INTENT = re.compile(r"预计|有望|大概率|可能|或(?:也|仍|更|将|有)|仍有.{0,10}空间|"
                     r"短时间不会|偏多|偏空|看好|关注|建议|不宜|观望|等待|"
-                    r"配置机会|维持|值博率|空间有限|加仓|减仓|交易空间|性价比|后续|接下来")
+                    r"配置机会|维持|值博率|空间有限|加仓|减仓|交易空间|更适合|保留灵活性|逢调整买入|具备压缩空间|机会大于风险|多看少动|性价比|后续|接下来")
 HISTORY = re.compile(r"202[0-5]年|历史上|彼时|上周[一二三四五]|周[一二三四五]|"
                      r"本周.{0,14}(?:上行|下行|先下后上)|全周|截至")
 METHOD = re.compile(r"例如|举例|均线|技术分析|BOLL|RSI|MACD|通常|一般而言")
@@ -32,7 +33,8 @@ def literal_parts(core):
 def adjudicate(digest, spans, items):
     records, audit = {}, []
     for entry in items:
-        c = entry["candidate"]
+        original = entry["candidate"]
+        c = source_proposal(original,spans)
         core = literal_parts(c["core"]).strip()
         cites = [dict(id=e["id"],page=int(e["id"].split("S")[0][1:]),quote=e["quote"])
                  for e in c["evidence"] if e["quote"] and e["quote"] in spans.get(e["id"],"")
@@ -60,27 +62,31 @@ def adjudicate(digest, spans, items):
             if futures_curve or re.search(r"国债期货|期货策略|期货方面",local) or any(
                 token in core for token in ("期货合约","期债")):
                 reason = "期货策略范围"
-                audit.append(dict(candidate=c,disposition=reason))
+                audit.append(dict(candidate=original,disposition=reason))
                 continue
             if OUTSIDE.search(core) or contrast or CONTEXT_ONLY.search(core) or (OUTSIDE.search(prefix) and not SUBJECT.search(first_clause)):
                 reason = "范围外品种或仅背景"
             elif METHOD.search(core) or (HISTORY.search(core) and not CURRENT.search(core)):
                 reason = "历史事实或方法说明"
             elif anchor and INTENT.search(core) and not OUTSIDE.search(market_prefix[-12:]):
-                subject = anchor[0]
-                uid = hashlib.sha256(encode([digest,core]).encode()).hexdigest()
+                curve=CURVE.search(core)
+                subject = (curve[0]+"利差") if curve and ("利差" in core or curve_windows(core)) else anchor[0]
+                identity = re.sub(r"^从观察因素看，", "", core).replace("老券的利差压缩策略","老券利差压缩策略")
+                uid = hashlib.sha256(encode([digest,identity]).encode()).hexdigest()
                 rec = records.setdefault(uid,dict(judgment_id=uid,subject=subject,source_subject=subject,
-                    display_label=subject,model_label=c["subject"],core=core,scope=c["scope"],citations=[]))
+                    display_label=subject,model_label=c["subject"],core=core,scope=c["scope"],instruments=instrument_index(core),spread_windows=curve_windows(core),citations=[]))
                 if re.fullmatch(r"\d+(?:[Yy]|年)(?:利率)?",subject):
                     rec["scope"]="待核"
                     rec["display_label"]=subject+"（券种待核）"
+                if len(rec["instruments"])>1 and not curve:
+                    rec["display_label"]="、".join(rec["instruments"])
                 for evidence in cites:
                     if evidence not in rec["citations"]:
                         rec["citations"].append(evidence)
-                audit.append(dict(candidate=c,disposition="待核品种" if rec["scope"]=="待核" else "保留",
+                audit.append(dict(candidate=original,disposition="待核品种" if rec["scope"]=="待核" else "保留",
                                   judgment_id=uid))
                 continue
-        audit.append(dict(candidate=c,disposition=reason))
+        audit.append(dict(candidate=original,disposition=reason))
     # Merge nested restatements only with a shared source span and one
     # unambiguous fuller judgment. Preserve its conditions and all citations.
     remap={}
