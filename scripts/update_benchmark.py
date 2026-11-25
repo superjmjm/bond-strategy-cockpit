@@ -112,6 +112,7 @@ def update_data(data, snapshot):
         print(f"Ignoring older official curve ({trade_date}); retaining {saved}.")
         return False
     fields = {
+        "benchmark_history": {**data.get("benchmark_history", {}), trade_date.isoformat(): yields},
         "benchmark_yields": yields,
         "benchmark_as_of": trade_date.isoformat(),
         "benchmark_note": SOURCE_LABEL,

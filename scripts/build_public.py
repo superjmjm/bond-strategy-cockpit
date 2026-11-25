@@ -15,6 +15,8 @@ def build(root, destination, production):
         (folder/'snapshot.json').write_text(json.dumps(document,ensure_ascii=False,allow_nan=False),encoding='utf8')
         for name in ('index.html','cockpit.js','cockpit.css'):
             copyfile(root/'web'/name,folder/name)
+    from build_zip_a import publish as publish_a
+    publish_a(root,destination/"preview-a")
     copyfile(root/'dashboard_data.json',destination/'dashboard_data.json')
     if (root/'preview/reports.json').exists():
         publish(destination/'preview',root/'preview/reports.json',True)

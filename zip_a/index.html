@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>国债期限观点驾驶舱</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo">债</span>
+    <div>
+      <b>国债期限观点驾驶舱</b>
+      <small>卖方策略 · 期限逻辑 · 边际变化 · 交投建议</small>
+    </div>
+  </div>
+  <nav class="nav">
+    <button data-page="dash">周度驾驶舱</button>
+    <button data-page="tenor">期限详情</button>
+    <button data-page="broker">券商画像</button>
+  </nav>
+  <div class="wk">
+    <label for="weekSel">观察周</label>
+    <select id="weekSel"></select>
+  </div>
+</header>
+<div class="bar-note">
+  颜色约定：<span class="bull">红 = 看多债券（收益率下行 / 曲线走平）</span>，<span class="bear">绿 = 看空（收益率上行 / 曲线走陡）</span>。
+  点位与原文严格忠于研报，未给点位不强算中位数，样本 &lt;4 家不评定分歧度。
+</div>
+<main id="app"><div class="loading">正在载入快照数据…</div></main>
+<div id="modal" class="modal hidden">
+  <div class="mbox">
+    <button class="mclose" title="关闭">×</button>
+    <div id="mbody"></div>
+  </div>
+</div>
+<script src="echarts.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
