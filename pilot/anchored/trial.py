@@ -40,9 +40,10 @@ def save(drive,parent,name,value):
     file_id=private_file(drive,parent,name,"application/json")
     media=MediaIoBaseUpload(io.BytesIO(encode(value).encode()),mimetype="application/json")
     drive.files().update(fileId=file_id,media_body=media).execute(num_retries=2)
+    return file_id
 
 def sealed_indices(drive,parent,prefix):
-    file_id=private_file(drive,parent,prefix+"-source-index.json.gz","application/gzip")
+    file_id=os.environ["REGRESSION_INPUT_ID"]
     until=time.monotonic()+1200
     while time.monotonic()<until:
         status=drive.files().get(fileId=file_id,fields="size,ownedByMe,shared,parents").execute()
@@ -76,7 +77,7 @@ def run():
     catalog=json.loads(drive.files().get_media(fileId=CATALOG).execute())["reports"]
     archive={r["sha256"]:r for r in catalog}
     run_id=os.environ["GITHUB_RUN_ID"]
-    prefix="anchored18-"+run_id
+    prefix="anchored-regression18-"+run_id
     manifest=dict(commit=os.environ["GITHUB_SHA"],reference_sha256=study["reference_sha256"],
                   reference_type=study["reference_type"],reports=[])
     prepared=[]
@@ -101,25 +102,14 @@ def run():
                 print("Incomplete report",i,type(exc).__name__,flush=True)
                 continue
             out=result["output"]
-            # Small private per-card files preserve every evidence paragraph for independent scoring.
-            label=f"{prefix}-{i:02d}"
-            for j,card in enumerate(out["cards"],1): save(drive,parent,f"{label}-card{j}.json",card)
-            audit=dict(report_id=out["report_id"],report_category=out["report_category"],
-                       cards=[{k:c[k] for k in ("bucket","action","logic","cond","risk","direction",
-                       "vote_eligible","account_note","evidence_pids","numbers","target_low","target_high")}
-                              for c in out["cards"]],
-                       candidates=result["s1"]["candidates"],clues=[{k:v for k,v in clue.items() if k!="evidence"}
-                       for clue in out["unmerged_clues"]],rejected=out["rejected"],s3=out["s3"],
-                       numeric_warnings=out["numeric_warnings"],pages=result["s0"]["pages"],receipts=result["receipts"])
-            save(drive,parent,label+"-audit.json",audit)
-            save(drive,parent,label+"-viewer.json",out)
-            # S0 is reproducible from the original; persist just the S2 response with the audit trail.
-            save(drive,parent,label+"-review.json",dict(review=result["s2"],clues=out["unmerged_clues"]))
-            manifest["reports"].append(dict(index=i,cards=len(out["cards"]),candidates=len(audit["candidates"]),
-                                           replay_identical=True,sha256=digest(result)))
+            receipt = dict(index=i, output=out, candidates=result["s1"]["candidates"],
+                           review=result["s2"], receipts=result["receipts"], replay_identical=True)
+            receipt_id = save(drive,parent,f"{prefix}-{i:02d}.json",receipt)
+            manifest["reports"].append(dict(index=i, receipt_id=receipt_id, cards=len(out["cards"]),
+                                           replay_identical=True,sha256=digest(receipt)))
             print("Saved report",i,"cards",len(out["cards"]),flush=True)
     manifest["reports"].sort(key=lambda row:row["index"])
-    save(drive,parent,prefix+"-manifest.json",manifest)
+    print("Manifest", save(drive,parent,prefix+"-manifest.json",manifest), flush=True)
     if any("error" in row for row in manifest["reports"]): raise SystemExit(1)
 
 if __name__=="__main__":

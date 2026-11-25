@@ -21,8 +21,8 @@ function show(reports){
     node(box,"small",cards.length+" 张卡 · "+votes.length+" 票");
     if(votes.length)node(box,"p",[["正向",c=>c.direction>0],["中性",c=>c.direction===0],["负向",c=>c.direction<0]].map(([k,f])=>k+" "+votes.filter(f).length).join(" / "));
     for(const c of cards){
-      const ranges=c.numbers.filter(n=>n.value!=null && n.window===c.horizon && n.unit.toLowerCase()==="bp");
-      if(c.target_low!=null && c.target_high!=null)node(box,"p",c.broker+" "+c.horizon+" · "+c.target_low+"–"+c.target_high+"%");
+      const ranges=(c.numbers??[]).filter(n=>n.value!=null && n.window===c.horizon && n.unit.toLowerCase()==="bp");
+      if(c.target_low!=null && c.target_high!=null)node(box,"p",c.broker+" "+c.horizon+" · "+c.target_low+"–"+c.target_high+(c.target_unit??"%"));
       if(bucket==="曲线形态"){const ends=["预测区间下限","预测区间上限"].map(role=>ranges.find(n=>n.role===role)?.value);if(ends.every(n=>n!=null))node(box,"p",c.broker+" "+c.horizon+" · "+ends.join("–")+" bp")}
     }
   }
@@ -31,8 +31,9 @@ function show(reports){
     if(!r.cards.length)node(a,"p",r.report_category==="资金流动性周报"?"资金专题·未涉国债策略":"未提及利率债策略");
     for(const c of r.cards){const d=disclosures(a,c.bucket+" · "+(c.vote_eligible?"方向 "+c.direction:"仅展示")+" · "+c.action);
       node(d,"p",c.logic);for(const [key,label] of [["raw_tenor","原期限"],["instrument_scope","品种"],["horizon","主窗口"],["cond","条件"],["account_note","账户"],["risk","风险"]])if(c[key])node(d,"p",label+"　"+c[key]);
-      for(const s of c.scenarios)node(d,"p",[s.window,s.account,s.condition,s.forecast,s.action].filter(Boolean).join(" · "));
-      for(const n of c.numbers)node(d,"p",n.window+" · "+n.role+"　"+(n.value==null?"数字待核":n.value+n.unit));
+      if(c.target_note)node(d,"p","目标与窗口　"+c.target_note);
+      for(const s of c.scenarios??[])node(d,"p",[s.window,s.account,s.condition,s.forecast,s.action].filter(Boolean).join(" · "));
+      for(const n of c.numbers??[])node(d,"p",n.window+" · "+n.role+"　"+(n.value==null?"数字待核":n.value+n.unit));
       for(const x of c.drivers)node(d,"p",x.layer+" · "+x.impact+"　"+x.phrase);
       for(const e of c.evidence)quote(d,e);
     }

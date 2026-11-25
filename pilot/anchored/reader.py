@@ -9,11 +9,11 @@ import unicodedata
 from decimal import Decimal
 from pathlib import Path
 from jsonschema import validate
-from contract import STAGE1, STAGE2, BUCKETS
+from contract import STAGE1, STAGE2, SLOTS
 from prompts import S1,S2
 from source import context,index_pdf
 
-MODEL="gpt-4.1-mini-2025-04-14"
+MODEL="gpt-4.1-2025-04-14"
 def encode(value):
     return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False)
 
@@ -56,111 +56,85 @@ def open_cache(path):
     db.execute("CREATE TABLE IF NOT EXISTS calls(key TEXT PRIMARY KEY,response TEXT NOT NULL,receipt TEXT NOT NULL)")
     return db
 
-def numeric_values(text):
-    s=unicodedata.normalize("NFKC",text).replace("−","-")
-    s=re.sub(r"(?<=\d)\s*[-–—~至]\s*(?=\d)"," ",s)
-    return {Decimal(m[0].replace(",","")) for m in re.finditer(r"(?<![\d.])[-+]?\d+(?:,\d{3})*(?:\.\d+)?(?![\d.])",s)}
+# Parse whole number tokens and shared-unit ranges. Never borrow a unit from a
+# different observation (e.g. 4/8 indicators next to a yield or turnover rate).
+NUMBER_TOKEN = r"[+\-]?\d+(?:\.\d+)?"
+MEASURE = re.compile(
+    rf"(?<![\d./+\-])({NUMBER_TOKEN})(?:\s*(?:[-~～–—至到])\s*({NUMBER_TOKEN}))?"
+    r"\s*(%|bp(?![a-z])|基点)", re.IGNORECASE)
 
-def project(card):
-    if card["bucket"]=="曲线形态" or card["bucket"]=="整体久期/组合":
-        return None,None
-    values={}
-    for n in card["numbers"]:
-        if n["unit"] in ("%","％") and n["window"]==card["horizon"] and n["value"] is not None:
-            values.setdefault(n["role"],set()).add(n["value"])
-    low,high=card["target_low"],card["target_high"]
-    if low is None or high is None or low>high:
-        return None,None
-    supported=(low==high and low in values.get("预测单点目标",set())) or (
-        low in values.get("预测区间下限",set()) and high in values.get("预测区间上限",set()))
-    return (low,high) if supported else (None,None)
 
-def finish(meta,index,candidates,review,visible):
-    bypid={p["pid"]:p for p in index["paragraphs"]}
-    known=set(candidates)
-    used=set()
-    handled=set()
-    buckets=set()
-    def refs(pids):
-        if not pids or not set(pids)<=visible: raise ValueError("Missing or foreign evidence anchor")
-        return [dict(pid=p,page=bypid[p]["page"],text=bypid[p]["text"]) for p in dict.fromkeys(pids)]
-    def track(row,merged):
-        ids=set(row["candidate_ids"])
-        if not ids or not ids<=known: raise ValueError("Missing or unknown candidate id")
-        if ids & handled or (not merged and ids & used): raise ValueError("Candidate has incompatible dispositions")
-        (used if merged else handled).update(ids)
-    cards=[]
-    warnings=[]
-    def accept(c):
-        card=json.loads(encode(c))
-        if sum(x["bucket"]==card["bucket"] for x in review["cards"])>1:
-            raise ValueError("Duplicate report/bucket")
-        card["evidence"]=refs(card["evidence_pids"])
-        for part in [*card["drivers"],*card["scenarios"],*card["numbers"]]:
-            refs(part["pids"])
-            if not set(part["pids"])<=set(card["evidence_pids"]): raise ValueError("Card is missing subordinate anchor")
-        for n in card["numbers"]:
-            available=set()
-            for p in context(index,n["pids"]): available.update(numeric_values(p["text"]))
-            if n["value"] is not None and Decimal(str(n["value"])) not in available:
-                warnings.append(dict(bucket=card["bucket"],reason="数字待核",submitted=n["value"],pids=n["pids"]))
-                n.update(value=None,status="数字待核")
-        low,high=project(card)
-        if (low,high)!=(card["target_low"],card["target_high"]):
-            warnings.append(dict(bucket=card["bucket"],reason="目标带待核",submitted=[card["target_low"],card["target_high"]]))
-        card.update(meta,report_id=index["report_id"],report_category=review["report_category"],target_low=low,target_high=high)
-        track(card,True)
-        return card
-    clues=[]
-    intercepted=[]
-    def intercept(row,reason):
-        ids=[i for i in dict.fromkeys(row["candidate_ids"]) if i in known]
-        pids=list(dict.fromkeys(p for i in ids for p in candidates[i]["pids"] if p in visible))
-        intercepted.append(dict(reason=reason,candidate_ids=ids,bucket=row.get("bucket")))
-        if pids:
-            clues.append(dict(reason=reason,candidate_ids=ids,evidence_pids=pids,evidence=refs(pids)))
-        handled.update(i for i in ids if i not in used)
-    for c in review["cards"]:
-        try: cards.append(accept(c))
-        except ValueError as error: intercept(c,str(error))
-    for clue in review["unmerged_clues"]:
-        try:
-            evidence=refs(clue["evidence_pids"])
-            track(clue,False)
-            clues.append(dict(clue,evidence=evidence))
-        except ValueError as error: intercept(clue,str(error))
-    rejected=[]
-    for r in review["rejected"]:
-        try:
-            track(r,False)
-            rejected.append(r)
-        except ValueError as error: intercept(r,str(error))
-    for cid in sorted(known-used-handled):
-        intercept({"candidate_ids":[cid]},"Missing semantic disposition")
+def targets(card, paragraphs):
+    low, high, unit = (card[key] for key in ("target_low","target_high","target_unit"))
+    if low is None and high is None and unit is None:
+        return True
+    limits = (-50,150,"bp") if card["bucket"] == "曲线形态" else (0.5,4.5,"%")
+    if (card["bucket"] == "整体久期/组合" or unit != limits[2] or low is None
+            or high is None or not limits[0] <= low <= high <= limits[1]):
+        return False
+    found = set()
+    for paragraph in paragraphs:
+        text = unicodedata.normalize("NFKC", paragraph["text"]).replace("−","-")
+        text = re.sub(r"(%|bp|基点)\s*[-~～–—至到]\s*(?=[+\-]?\d)", r"\1 ", text, flags=re.I)
+        for a, b, raw_unit in MEASURE.findall(text):
+            if ("%" if raw_unit=="%" else "bp") == unit:
+                found.add(Decimal(a))
+                if b: found.add(Decimal(b))
+    return Decimal(str(low)) in found and Decimal(str(high)) in found
+
+
+def finish(meta, index, candidates, review):
+    rows = index["paragraphs"]
+    by_pid = {p["pid"]:p for p in rows}
+    def evidence(pids):
+        return [{k:by_pid[pid][k] for k in ("pid","page","text")} for pid in pids]
+    cards, warnings, intercepted = [], [], []
+    used = set()
+    for slot, bucket in SLOTS.items():
+        proposed = review[slot]
+        if proposed is None:
+            continue
+        card = json.loads(encode(proposed))
+        card.update(meta, bucket=bucket, report_id=index["report_id"],
+                    report_category=review["report_category"])
+        pids = set(card["evidence_pids"])
+        drivers = []
+        for driver in card["drivers"]:
+            valid = list(dict.fromkeys(pid for pid in driver["pids"] if pid in by_pid))
+            if valid:
+                drivers.append(dict(driver,pids=valid))
+                pids.update(valid)
+        valid = [pid for pid in by_pid if pid in pids]
+        if not valid:
+            intercepted.append(dict(bucket=bucket,reason="无有效原段",submitted_pids=sorted(pids)))
+            continue
+        card.update(drivers=drivers,evidence_pids=valid,evidence=evidence(valid))
+        if not targets(card,context(index,valid)):
+            warnings.append(dict(bucket=bucket,reason="目标区间待核",
+                                 submitted=[card["target_low"],card["target_high"],card["target_unit"]]))
+            card.update(target_low=None,target_high=None,target_unit=None)
+        used.update(valid)
+        cards.append(card)
+    remaining = {pid for candidate in candidates for pid in candidate["pids"]} - used
+    clues = [dict(reason="候选原段未归入策略卡", evidence_pids=[pid], evidence=evidence([pid]))
+             for pid in by_pid if pid in remaining]
     return dict(**meta,report_id=index["report_id"],report_category=review["report_category"],
-        cards=cards,unmerged_clues=clues,rejected=rejected,numeric_warnings=warnings,s3=intercepted)
+                cards=cards,unmerged_clues=clues,numeric_warnings=warnings,s3=intercepted)
+
 
 def read_report(pdf,meta,db,model=MODEL,offline=False,invoke=ask):
     return read_index(index_pdf(pdf),meta,db,model,offline,invoke)
 
+
 def read_index(idx,meta,db,model=MODEL,offline=False,invoke=ask):
     if not idx["paragraphs"]: raise ValueError("S0: no extractable text")
-    first,r1=cached_call(db,model,"stage1",S1,dict(report=meta,paragraphs=idx["paragraphs"]),STAGE1,offline,invoke)
-    valid={p["pid"] for p in idx["paragraphs"]}
-    candidates={}
-    invalid=[]
-    for i,c in enumerate(first["candidates"],1):
-        good=[p for p in c["pids"] if p in valid]
-        if not good or len(good)!=len(c["pids"]):
-            invalid.append(dict(candidate_ids=[f"C{i}"],reason="Invalid Stage 1 anchor",original=c))
-        if good: candidates[f"C{i}"]=dict(c,pids=good)
-    selected=context(idx,{pid for c in candidates.values() for pid in c["pids"]})
-    headings=list(dict.fromkeys(p["heading"] for p in idx["paragraphs"] if p["heading"]))
-    packet=dict(report=meta,headings=headings,candidates=candidates,context=selected)
-    review,r2=cached_call(db,model,"stage2",S2,packet,STAGE2,offline,invoke)
-    output=finish(meta,idx,candidates,review,{p["pid"] for p in selected})
-    output["s3"].extend(invalid)
+    packet = dict(report=meta, paragraphs=idx["paragraphs"])
+    first,r1=cached_call(db,model,"stage1",S1,packet,STAGE1,offline,invoke)
+    candidates=first["candidates"]
+    review,r2=cached_call(db,model,"stage2",S2,dict(packet,candidates=candidates),STAGE2,offline,invoke)
+    output=finish(meta,idx,candidates,review)
     return dict(output=output,s0=idx,s1=first,s2=review,receipts=[r1,r2])
+
 
 def write_new(path,data):
     import tempfile

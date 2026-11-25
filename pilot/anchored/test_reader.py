@@ -1,56 +1,106 @@
-import copy
+import json
 import unittest
-from reader import finish, numeric_values, project
-from source import context
-from decimal import Decimal
+from unittest.mock import patch
 
-P="P1-S1"
-Q="P2-S1"
-R="P2-S2"
-INDEX={"report_id":"unit","paragraphs":[dict(pid=p,page=page,text=t,heading="策略") for p,page,t in [
-    (P,1,"1.70%下方，围绕1.68%盘整。"),(Q,2,"政策窗口保持观望。"),
-    (R,2,"短期45–50bp，供给高峰后40–45bp。")]]}
-CANDS={"C1":{"pids":[P,Q]},"C2":{"pids":[R]}}
-def measure(v,p,role,window="短期",unit="%"):
-    return dict(value=v,unit=unit,role=role,window=window,pids=[p])
-def card(bucket="10Y国债",p=P,c="C1"):
-    return dict(bucket=bucket,candidate_ids=[c],evidence_pids=[p],direction=0,vote_eligible=True,
-                numbers=[],scenarios=[],drivers=[],horizon="短期",target_low=None,target_high=None)
-def out(cards):
-    return finish({},INDEX,CANDS,dict(cards=cards,report_category="利率策略周报",
-                  unmerged_clues=[],rejected=[]),{P,Q,R})
-class TestGuardrails(unittest.TestCase):
-    def test_unique_card_and_sources(self):
-        c=card();c["evidence_pids"]=[P,Q]
-        result=out([c]);self.assertEqual([p["page"] for p in result["cards"][0]["evidence"]],[1,2])
-        self.assertEqual([p["text"] for p in result["cards"][0]["evidence"]],[r["text"] for r in INDEX["paragraphs"][:2]])
-        self.assertEqual(len(result["unmerged_clues"]),1)
-    def test_duplicate_isolated(self):
-        c=card();other=card("曲线形态",R,"C2")
-        result=out([c,copy.deepcopy(c),other]);self.assertEqual([c["bucket"] for c in result["cards"]],["曲线形态"])
-        self.assertEqual(len(result["s3"]),2)
-    def test_invalid_anchor(self):
-        result=out([card(p="P99-S1"),card("曲线形态",R,"C2")])
-        self.assertEqual(len(result["cards"]),1);self.assertTrue(result["unmerged_clues"][0]["evidence"])
-    def test_role_and_numeric(self):
-        c=card();c.update(target_low=1.68,target_high=1.7,numbers=[measure(1.68,P,"震荡中枢"),measure(1.7,P,"阻力/支撑关口"),measure(8.88,P,"预测单点目标")])
-        got=out([c])["cards"][0];self.assertIsNone(got["target_low"]);self.assertIsNone(got["numbers"][2]["value"])
-        self.assertEqual(got["numbers"][1]["value"],1.7)
-        self.assertNotIn(Decimal("1.68"),numeric_values("11.68%"))
-        self.assertEqual(numeric_values("４５–５０bp"),{Decimal(45),Decimal(50)})
-    def test_curve_and_unvoted(self):
-        c=card("曲线形态",R,"C2");c["direction"]=1
-        c["numbers"]=[measure(value,R,role,window,"bp") for window,lo,hi in [("短期",45,50),("高峰后",40,45)] for role,value in [("预测区间下限",lo),("预测区间上限",hi)]]
-        b=card("整体久期/组合");b["vote_eligible"]=False
-        got=out([b,c])["cards"];self.assertEqual(sum(x["vote_eligible"] for x in got),1)
-        self.assertEqual([n["value"] for n in got[1]["numbers"]],[45,50,40,45])
-    def test_adjustment_per_bucket(self):
-        a=card("30Y超长债");a["direction"]=-1
-        b=card("中端(5-7Y)");b["direction"]=1
-        self.assertEqual([c["direction"] for c in out([a,b])["cards"]],[-1,1])
-    def test_context_and_targets(self):
-        self.assertEqual([x["pid"] for x in context(INDEX,[Q])],[P,Q,R])
-        c=card();c.update(target_low=1.68,target_high=1.7,numbers=[measure(1.68,P,"预测区间下限"),measure(1.7,P,"预测区间上限")])
-        self.assertEqual(project(c),(1.68,1.7))
+from jsonschema import ValidationError, validate
+from contract import SLOTS, STAGE2
+from reader import MODEL, finish, open_cache, read_index, targets
+from source import index_pdf
+
+ROWS = [dict(pid=f"P1-S{i}",page=1,text=t,heading="债市策略") for i,t in enumerate(
+    ("4/8项指标触发，3只基金。","预测1.60–1.70％。","短期45至50BP，随后40–45基点。","观点以外的线索。"),1)]
+IDX = dict(report_id="fixture",paragraphs=ROWS,pages=[])
+P,Q,R,T = [row["pid"] for row in ROWS]
+
+def slots(**values):
+    return dict(report_category="利率策略周报",**(dict.fromkeys(SLOTS)|values))
+
+def card(**values):
+    base = dict(raw_tenor="10年",instrument_scope="国债",account_note="",vote_eligible=True,
+                direction=0,action="观望",horizon="短期",target_low=None,target_high=None,
+                target_unit=None,target_note="",cond="",risk="",logic="维持观望",drivers=[],evidence_pids=[P])
+    return base|values
+
+class ContractTests(unittest.TestCase):
+    def test_all_required_null_slots_no_legacy_keys(self):
+        validate(slots(),STAGE2)
+        validate(slots(cgb_10y=card()),STAGE2)
+        for payload in [slots(cards=[]), slots(rejected=[]), slots(unmerged_clues=[]),
+                        slots(cgb_10y=card(candidate_ids=[])),slots(cgb_10y=card(scenarios=[])),
+                        slots(cgb_10y=card(numbers=[])),slots(cgb_10y=card(bucket="曲线形态"))]:
+            with self.subTest(payload=payload),self.assertRaises(ValidationError):
+                validate(payload,STAGE2)
+        missing=slots(); del missing["curve"]
+        with self.assertRaises(ValidationError): validate(missing,STAGE2)
+
+    def test_union_and_clue_difference(self):
+        d=dict(layer="资金面",impact="中性",phrase="资金",pids=[Q,"foreign"])
+        c=card(drivers=[d],evidence_pids=[P,P,"foreign"])
+        cands=[{"pids":[P,Q,T,T]},{"pids":[T,"foreign"]}]
+        out=finish({},IDX,cands,slots(cgb_10y=c))
+        self.assertEqual(out["cards"][0]["evidence_pids"],[P,Q])
+        self.assertEqual(out["cards"][0]["drivers"][0]["pids"],[Q])
+        self.assertEqual([e["evidence_pids"] for e in out["unmerged_clues"]],[[T]])
+
+    def test_target_warning_keeps_card_and_note(self):
+        v=card(target_low=4,target_high=4,target_unit="%",target_note="4/8项触发")
+        out=finish({},IDX,[],slots(cgb_10y=v))
+        c=out["cards"][0]
+        self.assertEqual((c["target_low"],c["target_high"],c["target_unit"],c["target_note"]),(None,None,None,"4/8项触发"))
+        self.assertEqual(len(out["numeric_warnings"]),1)
+
+    def test_target_range_and_unit(self):
+        for bucket,low,high,unit,source,ok in [
+            ("10Y国债",1.6,1.7,"%","1.60–1.70％",True),
+            ("10Y国债",1.6,1.7,"%","1.60%-1.70%",True),
+            ("10Y国债",4,4,"%","4/8项，8%占比",False),
+            ("10Y国债",4,4,"%","14%",False),("10Y国债",4,4,"%","4BP；1.8%",False),
+            ("10Y国债",0.49,0.49,"%","0.49%",False),("10Y国债",4.51,4.51,"%","4.51%",False),
+            ("10Y国债",1.6,1.7,"bp","1.6–1.7bp",False),("10Y国债",1.7,1.6,"%","1.6–1.7%",False),
+            ("曲线形态",-50,150,"bp","−50到150基点",True),("曲线形态",45,50,"bp","45–50BP",True),
+            ("曲线形态",45,50,"bp","45和50%",False),("曲线形态",None,50,"bp","50bp",False),
+            ("曲线形态",-51,150,"bp","-51到150bp",False),("整体久期/组合",1,1,"%","1%",False)]:
+            with self.subTest(bucket=bucket,source=source):
+                self.assertEqual(targets(dict(bucket=bucket,target_low=low,target_high=high,target_unit=unit),[{"text":source}]),ok)
+
+    def test_adjacent_source_and_invalid_primary_anchor(self):
+        c=card(target_low=1.6,target_high=1.7,target_unit="%")
+        out=finish({},IDX,[],slots(cgb_10y=c,ultra_30y=card(evidence_pids=["foreign"])))
+        self.assertEqual(len(out["cards"]),1)
+        self.assertEqual(out["cards"][0]["target_low"],1.6)
+        self.assertEqual(len(out["s3"]),1)
+
+    def test_full_text_and_replay_empty_funding(self):
+        calls=[]
+        def ask(model,stage,prompt,payload,schema):
+            self.assertEqual(model,"gpt-4.1-2025-04-14")
+            self.assertEqual(payload["paragraphs"],ROWS)
+            calls.append(stage)
+            return ({"candidates":[]} if stage=="stage1" else slots()|{"report_category":"资金流动性周报"}),{}
+        db=open_cache(":memory:")
+        try:
+            result=read_index(IDX,{},db,invoke=ask)
+            self.assertEqual(result["output"]["cards"],[])
+            self.assertEqual(result,read_index(IDX,{},db,offline=True))
+            self.assertEqual(calls,["stage1","stage2"])
+        finally: db.close()
+
+    def test_normal_paragraphs_section_paths_and_physical_pages(self):
+        class Page(dict):
+            def __init__(self,raw): self.raw=raw
+            def extract_text(self,visitor_text):
+                visitor_text(self.raw,None,None,None,10)
+                return self.raw
+        class PDF:
+            outline=[]
+            pages=[Page("一、市场回顾\n（一）机构行为\n基金久期上升。\n换手也上升！\n\n另一自然段。"),
+                   Page("次页续文。\n二、投资策略\n建议观望。")]
+        with patch("source.PdfReader",return_value=PDF()):
+            rows=index_pdf(b"pdf")["paragraphs"]
+        self.assertEqual(rows[2]["text"],"基金久期上升。\n换手也上升！")
+        self.assertEqual(rows[2]["heading"],"一、市场回顾 / （一）机构行为")
+        self.assertEqual(rows[4]["pid"],"P2-S1")
+        self.assertEqual(rows[4]["heading"],rows[2]["heading"])
+        self.assertEqual(rows[-1]["heading"],"二、投资策略")
+
 if __name__=="__main__": unittest.main()
-
