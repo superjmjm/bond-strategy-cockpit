@@ -1,0 +1,33 @@
+name: Locate this run's private receipt IDs
+on:
+  push:
+    branches: [trial/anchored-18-locate]
+    paths: ['.github/workflows/locate-anchored.yml']
+permissions:
+  contents: read
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python -m pip install -q google-api-python-client requests
+      - name: Return file IDs for this trial only
+        env:
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+        run: |
+          python - <<'PY'
+          from scripts.report_io import drive_service
+          import hashlib
+          drive=drive_service()
+          prior=drive.files().get(fileId='1wQF5QVVGO4gngUQ3GuP3rUvfAFXUou6M',fields='parents,ownedByMe,shared').execute()
+          assert prior['ownedByMe'] and not prior.get('shared') and len(prior['parents'])==1
+          folder=prior['parents'][0]
+          assert hashlib.sha256(folder.encode()).hexdigest()=='ed4ba419f13cf234196e3958d1c6a82871a43fd075210b3574fe325540baec83'
+          prefix='anchored18-45557215475-'
+          rows=drive.files().list(q=f"trashed=false and '{folder}' in parents and name contains '{prefix}'",fields='files(id,name,ownedByMe,shared)',pageSize=1000).execute()['files']
+          for row in rows:
+              if row['ownedByMe'] and not row.get('shared') and row['name'].startswith(prefix):
+                  print(row['name'],row['id'])
+          PY
