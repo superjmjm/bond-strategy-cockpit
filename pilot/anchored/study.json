@@ -1,0 +1,114 @@
+{
+  "reference_sha256": "f2b75b8ec8de4dcbdc43264e0d790cd8f087fa3d4d23b403bc99375e485b11b1",
+  "reference_type": "Work 独立预标，非人工金标准",
+  "reports": [
+    {
+      "report_id": "3e602a946cbc50af1952cdb66fb473c6ec98541a40a90bb41b05dba1e1f2cf58",
+      "broker": "国信证券",
+      "series": "超长债周报",
+      "report_date": "2026-11-01"
+    },
+    {
+      "report_id": "0b90b7780496554d234a78fdc29bf119cbc54129472b4f0eeb35c199da0f0c8c",
+      "broker": "国信证券",
+      "series": "超长债周报",
+      "report_date": "2026-10-25"
+    },
+    {
+      "report_id": "c546ff59825425a3e5c2d864b5b69cfe5006b962604780a805f5cb6f42f4d04e",
+      "broker": "国信证券",
+      "series": "超长债周报",
+      "report_date": "2026-10-18"
+    },
+    {
+      "report_id": "596c39a9f30a1c33a495ec78690c2ffbd52dc79327d96b71a9212efd285266c8",
+      "broker": "国海证券",
+      "series": "债券研究周报",
+      "report_date": "2026-11-08"
+    },
+    {
+      "report_id": "bfc7adb936496aec4e7e2e05f4496e0d3805cd7fe10b53dd6b9ff92e568bf2b9",
+      "broker": "国海证券",
+      "series": "债券研究周报",
+      "report_date": "2026-11-04"
+    },
+    {
+      "report_id": "06bedc984ef93421e17b95d2312c287576ea7954a9876a18a6e7ba9e4c271ced",
+      "broker": "国海证券",
+      "series": "债券研究周报",
+      "report_date": "2026-10-27"
+    },
+    {
+      "report_id": "e2dbe8f9eeb2ff5e38610d6830219aa56a5ef83d8d3a430aa363b2034d473674",
+      "broker": "西部证券",
+      "series": "固定收益周报",
+      "report_date": "2026-10-25"
+    },
+    {
+      "report_id": "080eafc2a59800b1bfad5d9ca59fb8f5810957486b7bc69bc52b3a9641375a53",
+      "broker": "西部证券",
+      "series": "固定收益周报",
+      "report_date": "2026-10-18"
+    },
+    {
+      "report_id": "b1197c515d7cbd9fdb9f1c5102991a076d69f65045d7382482256917f41e50fe",
+      "broker": "西部证券",
+      "series": "固定收益周报",
+      "report_date": "2026-09-27"
+    },
+    {
+      "report_id": "f5b1bef6f204964239c85a1a14474201bd2cfdc3ffe7b2bfe5f72fdcaaac83be",
+      "broker": "华泰证券",
+      "series": "资产配置周报",
+      "report_date": "2026-11-18"
+    },
+    {
+      "report_id": "8145e53922cb31c5ea16b48f7dfca3d37a1b1c7e93c3298a017493229aeaeae3",
+      "broker": "天风证券",
+      "series": "固收周度点评",
+      "report_date": "2026-11-08"
+    },
+    {
+      "report_id": "84e4263a8b887d178ea25166091b1520f4f2c2fc24cdd54bfae490937b01622d",
+      "broker": "申万宏源",
+      "series": "机构行为观察周报",
+      "report_date": "2026-11-07"
+    },
+    {
+      "report_id": "0f696588a47973b58a43fecf5c27a17b2a1bc8fdeb6f08874ba8c490a508b483",
+      "broker": "浙商证券",
+      "series": "债市量化周度跟踪",
+      "report_date": "2026-11-01"
+    },
+    {
+      "report_id": "39b0234d1917dfcdd00881848d02c8edc9a0add2911743afdf53309094af6ce8",
+      "broker": "天风证券",
+      "series": "高频跟踪周报",
+      "report_date": "2026-11-07"
+    },
+    {
+      "report_id": "332c5b8b0aa85a6190ca1778b97673000d8a39a378decc11a31c66bbcdcfa20c",
+      "broker": "华创证券",
+      "series": "每周高频跟踪",
+      "report_date": "2026-11-07"
+    },
+    {
+      "report_id": "b315907fd3129718669dc784ed0426daaf639fd5ffa70f60b1c122516605c7e7",
+      "broker": "华泰证券",
+      "series": "流动性跟踪周报",
+      "report_date": "2026-10-26"
+    },
+    {
+      "report_id": "ec8546f9fd977ab8d6eef2ce9593a8d97ea990aa1e260df9141cdb437037d072",
+      "broker": "渤海证券",
+      "series": "信用债周报",
+      "report_date": "2026-10-27"
+    },
+    {
+      "report_id": "ce4f4d2a0c365e5f133d94153fd776c475dc0f75c7de40ce36f460f53ab537c8",
+      "broker": "天风证券",
+      "series": "经济数据点评",
+      "report_date": "2026-11-17"
+    }
+  ]
+}

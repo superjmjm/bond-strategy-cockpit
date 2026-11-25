@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>利率债周报 · 隔离阅览</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6f3;color:#192a2a;font:16px/1.55 "Source Sans 3",system-ui,sans-serif}main{max-width:1120px;margin:auto;padding:28px 20px}h1{font-size:28px}h2{font-size:20px}h3{font-size:17px}header,.box,article{background:white;padding:18px 20px;margin:12px 0;border:1px solid #d5ded9;border-radius:8px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:10px}.box{margin:0}small,.muted{color:#536760}summary{cursor:pointer;font-weight:600}blockquote{border-left:3px solid #9ab4a2;padding-left:12px;margin:8px 0;white-space:pre-wrap}p{margin:6px 0}input{max-width:100%}details{margin:9px 0}strong{color:#185843}
+</style><main><header><h1>利率债周报 · 隔离阅览</h1><label>打开本地阅读结果（可多选） <input type="file" multiple accept=".json,application/json"></label><p id="status" role="status"></p></header><section id="home"></section><section id="details"></section></main>
+<script>
+"use strict";
+const buckets=["短端(1-3Y)","中端(5-7Y)","10Y国债","30Y超长债","曲线形态","整体久期/组合"];
+const q=id=>document.getElementById(id);
+function node(parent,tag,text){const e=document.createElement(tag);e.textContent=text??"";parent.append(e);return e}
+function disclosures(parent,title){const e=node(parent,"details");node(e,"summary",title);return e}
+function quote(parent,e){node(parent,"small","PDF 物理页 "+e.page+" · "+e.pid);node(parent,"blockquote",e.text)}
+function show(reports){
+  q("home").replaceChildren();q("details").replaceChildren();node(q("home"),"h2","所选报告共识");
+  const grid=node(q("home"),"div");grid.className="grid";
+  for(const bucket of buckets){
+    const box=node(grid,"div");box.className="box";node(box,"h3",bucket);
+    const cards=reports.flatMap(r=>r.cards.filter(c=>c.bucket===bucket)),votes=cards.filter(c=>c.vote_eligible);
+    const mean=votes.reduce((s,c)=>s+c.direction,0)/votes.length;
+    node(box,"p",votes.length?"共识均分 "+mean.toFixed(2):"暂无方向票");
+    node(box,"small",cards.length+" 张卡 · "+votes.length+" 票");
+    if(votes.length)node(box,"p",[["正向",c=>c.direction>0],["中性",c=>c.direction===0],["负向",c=>c.direction<0]].map(([k,f])=>k+" "+votes.filter(f).length).join(" / "));
+    for(const c of cards){
+      const ranges=c.numbers.filter(n=>n.value!=null && n.window===c.horizon && n.unit.toLowerCase()==="bp");
+      if(c.target_low!=null && c.target_high!=null)node(box,"p",c.broker+" "+c.horizon+" · "+c.target_low+"–"+c.target_high+"%");
+      if(bucket==="曲线形态"){const ends=["预测区间下限","预测区间上限"].map(role=>ranges.find(n=>n.role===role)?.value);if(ends.every(n=>n!=null))node(box,"p",c.broker+" "+c.horizon+" · "+ends.join("–")+" bp")}
+    }
+  }
+  for(const r of reports.sort((a,b)=>b.report_date.localeCompare(a.report_date))){
+    const a=node(q("details"),"article");node(a,"small",r.report_date+" · "+r.broker+" · "+r.report_category);node(a,"h2",r.title||r.series);
+    if(!r.cards.length)node(a,"p",r.report_category==="资金流动性周报"?"资金专题·未涉国债策略":"未提及利率债策略");
+    for(const c of r.cards){const d=disclosures(a,c.bucket+" · "+(c.vote_eligible?"方向 "+c.direction:"仅展示")+" · "+c.action);
+      node(d,"p",c.logic);for(const [key,label] of [["raw_tenor","原期限"],["instrument_scope","品种"],["horizon","主窗口"],["cond","条件"],["account_note","账户"],["risk","风险"]])if(c[key])node(d,"p",label+"　"+c[key]);
+      for(const s of c.scenarios)node(d,"p",[s.window,s.account,s.condition,s.forecast,s.action].filter(Boolean).join(" · "));
+      for(const n of c.numbers)node(d,"p",n.window+" · "+n.role+"　"+(n.value==null?"数字待核":n.value+n.unit));
+      for(const x of c.drivers)node(d,"p",x.layer+" · "+x.impact+"　"+x.phrase);
+      for(const e of c.evidence)quote(d,e);
+    }
+    if(r.unmerged_clues.length){const d=disclosures(a,"另有 "+r.unmerged_clues.length+" 条相关原段可展开");for(const clue of r.unmerged_clues){node(d,"p",clue.reason);for(const e of clue.evidence)quote(d,e)}}
+  }
+}
+document.querySelector("input").onchange=async event=>{
+  try{const map=new Map();for(const f of event.target.files){const raw=JSON.parse(await f.text());for(const r of raw.reports??[raw.output??raw]){
+    if(!r.report_id||!Array.isArray(r.cards)||!Array.isArray(r.unmerged_clues))throw Error("需要包含完整原段的阅读结果");
+    if(map.has(r.report_id)&&JSON.stringify(map.get(r.report_id))!==JSON.stringify(r))throw Error("同一报告有冲突版本，请选定一个版本");
+    if(new Set(r.cards.map(c=>c.bucket)).size!==r.cards.length)throw Error("同一报告存在重复桶");
+    map.set(r.report_id,r);
+  }}show([...map.values()]);q("status").textContent="已打开 "+map.size+" 篇报告"}catch(e){show([]);q("status").textContent=e.message}
+};
+</script></html>
