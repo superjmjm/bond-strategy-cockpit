@@ -15,7 +15,7 @@ on:
         type: string
   push:
     branches: [main]
-    paths: [index.html, dashboard_data.json, anchored_reports.json, 'web/**', 'scripts/build_public.py', 'scripts/anchored_snapshot.py', .github/workflows/update_dashboard.yml]
+    paths: [index.html, dashboard_data.json, anchored_reports.json, 'web/**', 'zip_a/**', 'scripts/check_zip_a.py', 'scripts/build_zip_a.py', 'scripts/build_public.py', 'scripts/anchored_snapshot.py', .github/workflows/update_dashboard.yml]
   schedule:
     - cron: '17 0 * * *' # 北京时间 08:17
     - cron: '17 4 * * *' # 北京时间 12:17

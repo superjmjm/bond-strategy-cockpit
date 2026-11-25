@@ -119,8 +119,6 @@ def validate_and_dedup_views(raw_views: list[dict[str, Any]]) -> tuple[list[dict
                 if isinstance(d, dict) and d.get("layer") in LAYERS and d.get("phrase"):
                     imp = d.get("impact") if d.get("impact") in IMPACTS else "中性"
                     drivers.append({"layer": d["layer"], "impact": imp, "phrase": str(d["phrase"]).strip()})
-            if not drivers:
-                drivers = [{"layer": "基本面", "impact": "中性", "phrase": "待补充逻辑"}]
 
             clean = {
                 "broker": broker,
@@ -144,6 +142,8 @@ def validate_and_dedup_views(raw_views: list[dict[str, Any]]) -> tuple[list[dict
                 "quote": str(v.get("quote") or "").strip(),
                 "page": int(v.get("page") or 1),
             }
+            if type(v.get("vote_eligible")) is not bool:
+                raise ValueError("Missing vote eligibility")
             clean.update(report_id=v["report_id"],vote_eligible=v["vote_eligible"],evidence=v["evidence"],account_note=v["account_note"])
             dedup[(v["report_id"], tenor)] = clean
         except Exception as exc:
@@ -158,7 +158,7 @@ def validate_and_dedup_views(raw_views: list[dict[str, Any]]) -> tuple[list[dict
 def build_snapshot(raw_views: list[dict[str, Any]], raw_yields: list[dict[str, Any]], reports=()) -> dict[str, Any]:
     views, errors = validate_and_dedup_views(raw_views)
     if errors:
-        print(f"[WARN] Skipped {len(errors)} invalid view rows (first 3: {errors[:3]})", file=sys.stderr)
+        raise ValueError(f"Invalid card(s): {errors[:3]}")
 
     # 1) 处理日度收益率（允许为空）
     raw_yields_sorted = sorted(raw_yields, key=lambda r: r["date"])
@@ -213,7 +213,7 @@ def build_snapshot(raw_views: list[dict[str, Any]], raw_yields: list[dict[str, A
 
         key = (v["broker"], v["tenor"])
         prev = last_seen.get(key)
-        gap = (wi - prev[0]) if prev is not None else None
+        gap = ((date.fromisoformat(v["week_mon"])-date.fromisoformat(weeks[prev[0]]["mon"])).days//7) if prev is not None else None
         has_prev = gap is not None and 1 <= gap <= 4
         v["prev_dir"] = prev[1] if has_prev else None
         v["gap_weeks"] = gap if has_prev else None

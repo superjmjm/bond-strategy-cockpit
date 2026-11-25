@@ -127,7 +127,7 @@
         <div class="card"><h3>⚡ 分歧最大的期限<span class="hint">仅统计覆盖 ≥${S.min_sample_stats} 家的期限 · 最乐观 vs 最悲观</span></h3>${renderDivergences(d.divergences)}</div>
       </div>`;
 
-    root.insertAdjacentHTML("beforeend", S.empty_reports.filter(r=>r.week_mon===wk.mon).map(r=>'<p>'+r.report_date+" · "+r.broker+" · "+r.title+" · 资金专题·未涉国债策略</p>").join(""));
+    root.insertAdjacentHTML("beforeend", S.empty_reports.filter(r=>r.week_mon===wk.mon).map(r=>'<p>'+r.report_date+" · "+r.broker+" · "+r.title+" · "+(r.report_category==="资金流动性周报"?"资金专题·未涉国债策略":"未提及独立利率债策略")+"</p>").join(""));
     // 1) 收益率曲线 × 卖方目标
     const cv = d.curve;
     const c = mk('c-curve', {
@@ -276,7 +276,7 @@
         <div class="card"><h3>六层框架热力图（周 × 六层）<span class="hint">红 = 净利多提及 · 绿 = 净利空提及 · 悬停查看当周研报真实主线短语</span></h3><div id="c-th" class="chart" style="height:340px"></div></div>
       </div>
       <div class="card"><h3>各家最新观点（${wk.title}）<span class="hint">近4周内有效观点 · 点击卡片查看完整逻辑、原文摘录与原 PDF</span></h3>
-        <div class="vcards">${latest.map(v => `<div class="vc" data-vid="${v.id}" style="border-left-color:${dirColor(v.direction)}">
+        <div class="vcards">${latest.filter(v=>!state.tenorBroker||v.broker===state.tenorBroker).map(v => `<div class="vc" data-vid="${v.id}" style="border-left-color:${dirColor(v.direction)}">
           <div class="vch"><b>${v.broker}</b><span class="badge" style="background:${dirColor(v.direction)}">${dirLabel(v.direction, t.type)}</span>${deltaBadge(v)}${v.week_idx < state.week ? `<span class="stale">${state.week - v.week_idx}周前</span>` : ''}</div>
           <div class="vcm"><span>原文 <b>${v.raw_tenor}</b></span><span>目标 <b>${tgtTxt(v)}</b></span><span>操作 <b>${v.action}</b></span></div>
           <div>${v.drivers.map(driverChip).join('')}</div><div class="vcl">${v.logic}</div></div>`).join('') || '<div class="empty">近4周无券商覆盖该期限</div>'}</div>
@@ -446,7 +446,7 @@
       <div class="sec">核心逻辑</div><div>${v.logic || '—'}</div>
       <div class="sec">六层驱动</div><div>${v.drivers.map(dr => `${driverChip(dr)}<small class="dF">${dr.layer}</small> `).join(' ')}</div>
       <div class="sec">成立条件与风险</div><div>${v.cond || '—'}${v.risk ? ` · 主要风险：${v.risk}` : ''}</div>
-      <div class="sec">原文摘录</div>${v.evidence.map(e=>`<blockquote>${e.text}<br><small>物理页 ${e.page} · ${e.pid}</small></blockquote>`).join("")}
+      <div class="sec">原文摘录</div>${v.account_note ? `<p>适用账户 · ${v.account_note}</p>` : ""}${v.evidence.map(e=>`<blockquote>${e.text}<br><small>物理页 ${e.page} · ${e.pid}</small></blockquote>`).join("")}
       <div class="sec">该券商在 ${v.tenor} 上的历史轨迹</div>
       <table><thead><tr><th>日期</th><th>原文品种</th><th>观点</th><th>目标</th><th>操作</th><th>主线</th></tr></thead><tbody>
         ${hist.map(h => `<tr style="${h.id === v.id ? 'background:#fff4e6' : ''}"><td>${h.report_date}</td><td>${h.raw_tenor}</td><td><span style="color:${dirColor(h.direction)};font-weight:600">${dirLabel(h.direction, t.type)}</span></td><td>${tgtTxt(h)}</td><td>${h.action}</td><td>${h.drivers.map(d => d.phrase).join('、')}</td></tr>`).join('')}

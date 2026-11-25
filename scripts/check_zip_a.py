@@ -30,14 +30,15 @@ def check(url):
             for t in s['tenors']:
                 page.locator('button[data-tenor="'+t['id']+'"]').click()
                 expect(page.locator('#c-tw canvas').first).to_be_visible()
-                for v in [v for v in s['views'] if v['week_idx']==i and v['tenor']==t['id']]:
+                latest={v["broker"]:v for v in s["views"] if v["week_idx"]==i and v["tenor"]==t["id"]}
+                for v in latest.values():
                     card=page.locator('.vc[data-vid="'+str(v['id'])+'"]')
-                    if not card.count():continue
+                    expect(card).to_be_visible()
                     assert ('仅展示·不计单期限票' in card.inner_text())== (not v['vote_eligible'])
                     card.click()
                     expect(page.locator('#modal')).to_be_visible()
                     assert all(e['pid'] in page.locator('#mbody').inner_text() for e in v['evidence'])
-                    page.locator('#mclose').click()
+                    page.locator('.mclose').click()
             page.locator('[data-page=broker]').click()
             expect(page.locator('#c-bh canvas').first).to_be_visible()
             print(week['mon'],'cards',s['dash_by_week'][-1]['total_views'],'votes',sum(m['n'] for m in s['dash_by_week'][-1]['matrix']),'market',s['dash_by_week'][-1]['market_date'])
