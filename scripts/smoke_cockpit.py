@@ -28,12 +28,13 @@ def verify(url, isolated):
         else: raise RuntimeError("Expected release snapshot unavailable")
         assert data["buckets"][0]=="整体久期/组合" and len(data["buckets"])==6
         assert data["benchmark"]["benchmark_as_of"] and len(data["benchmark"]["benchmark_yields"])==4
-        page.goto(url+"?release="+str(time.time_ns()))
+        page.goto(url)
         page.locator("#curve").wait_for()
         assert page.locator("#edition").inner_text()==("隔离验证页" if isolated else "正式看板")
         counts=Counter()
         for day in sorted({week(r["report_date"]) for r in data["reports"]}):
             page.locator("nav a").nth(0).click()
+            page.locator("#curve").wait_for()
             page.select_option("#week",day)
             rs=[r for r in data["reports"] if week(r["report_date"])==day]
             rows=page.locator("table").first.locator("tbody tr")
@@ -49,7 +50,7 @@ def verify(url, isolated):
                 assert list(map(int,cells[2].split("/")))==[sum((n>0)-(n<0)==j for n in ds) for j in (1,0,-1)]
                 if ds: assert isclose(float(cells[1]),mean(ds),abs_tol=.0051) and isclose(float(cells[3]),pstdev(ds),abs_tol=.0051)
                 else: assert cells[1]==cells[3]=="—"
-                page.goto(url+"#tenor/"+quote(bucket,safe=""))
+                rows.nth(i).locator("a").click()
                 page.wait_for_selector("h1:text-is('期限详情')")
                 assert page.locator(".pills a").count()==6
                 assert page.locator("article").count()==len(cards)
@@ -60,6 +61,7 @@ def verify(url, isolated):
                     assert article.locator("blockquote").count()==len(c["evidence"])
                     assert all(e["pid"] in article.inner_text() and int(e["page"])>=1 for e in c["evidence"])
                 page.locator("nav a").nth(0).click()
+                page.locator("#curve").wait_for()
                 rows=page.locator("table").first.locator("tbody tr")
                 counts["cards"]+=len(cards);counts["votes"]+=sum(c["vote_eligible"] for _,c in cards)
             page.locator("nav a").nth(2).click()

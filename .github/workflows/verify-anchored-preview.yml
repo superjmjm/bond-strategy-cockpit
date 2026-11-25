@@ -2,7 +2,7 @@ name: Verify anchored preview online
 on:
   push:
     branches: [verify/anchored-pages-1125]
-    paths: [.github/workflows/verify-anchored-preview.yml]
+    paths: [.github/workflows/verify-anchored-preview.yml, scripts/smoke_cockpit.py]
 permissions:
   contents: read
 jobs:
