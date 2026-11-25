@@ -21,7 +21,9 @@ def build(root, destination, production):
     if (root/'preview/reports.json').exists():
         publish(destination/'preview',root/'preview/reports.json',True)
     if production:
-        publish(destination,root/'anchored_reports.json',False)
+        publish(destination/'archive',root/'anchored_reports.json',False)
+        copyfile(destination/'archive/snapshot.json',destination/'snapshot.json')
+        publish_a(root,destination)
     else:
         copyfile(root/'index.html',destination/'index.html')
 

@@ -301,5 +301,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install 'playwright>=1.55,<2'
-      - run: python scripts/smoke_cockpit.py https://superjmjm.github.io/bond-strategy-cockpit/
+      - run: python scripts/check_zip_a.py https://superjmjm.github.io/bond-strategy-cockpit/
       - run: python scripts/check_zip_a.py https://superjmjm.github.io/bond-strategy-cockpit/preview-a/
