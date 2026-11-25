@@ -59,7 +59,7 @@
     const el = document.getElementById(id);
     if (!el) return null;
     const c = echarts.init(el);
-    c.setOption(opt);
+    c.setOption({animation:false, ...opt});
     charts.push(c);
     return c;
   }
@@ -191,7 +191,8 @@
       tooltip: {
         trigger: 'axis', axisPointer: { type: 'shadow' },
         formatter: ps => {
-          const r = ls[ps[0].dataIndex];
+          const r = ls[ps?.[0]?.dataIndex];
+          if (!r) return "";
           return `<b>${r.layer}</b><br>本周净情绪 ${sgn(r.now_score, 1)}（提及 ${r.now_total} 次，净利多 ${sgn(r.now_net, 0)}）<br>前3周均值 ${sgn(r.prev_score, 1)} · 变化 <b>${sgn(r.delta, 1)}</b><br>当周主线：${(r.phrases || []).join('、') || '—'}`;
         }
       },
@@ -296,6 +297,7 @@
               const v = p.data.raw;
               return `<b>${v.broker}</b> ${v.report_date}（${v.raw_tenor}）<br>${dirLabel(v.direction, t.type)} · 目标 ${tgtTxt(v)} · ${v.horizon}`;
             }
+            if (!Array.isArray(p.value)) return "";
             return `${echarts.time.format(p.value[0], '{yyyy}-{MM}-{dd}')}：${(+p.value[1]).toFixed(t.type === 'spread' ? 1 : 3)}${unit}`;
           }
         },

@@ -8,7 +8,7 @@ def check(url):
         browser=pw.chromium.launch(executable_path=which("google-chrome") or which("chromium"),args=["--no-sandbox"])
         page=browser.new_page()
         errors=[]
-        page.on("pageerror",lambda error:errors.append(str(error)))
+        page.on("pageerror",lambda error:errors.append(error.stack or str(error)))
         for attempt in range(20):
             response=page.request.get(url+'data/snapshot.json?probe='+str(time.time_ns()))
             if response.ok and 'as_of' in response.json(): break
