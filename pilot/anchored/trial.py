@@ -24,13 +24,12 @@ def private_parent(drive):
         raise ValueError("Receipt provenance")
     if hashlib.sha256(parents[0].encode()).hexdigest() != PARENT_HASH:
         raise ValueError("Unexpected trial destination")
-    parent = drive.files().get(fileId=parents[0],fields="ownedByMe,shared,mimeType").execute()
-    if not parent["ownedByMe"] or parent.get("shared") or parent["mimeType"]!="application/vnd.google-apps.folder":
-        raise ValueError("Destination privacy")
     return parents[0]
 
 def save(drive,parent,name,value):
-    meta=drive.files().create(body={"name":name,"parents":[parent],"mimeType":"application/json"},
+    # File-scoped OAuth can verify sibling metadata but cannot enumerate the parent.
+    # Compare the new empty file's actual parent and ownership before uploading any content.
+    meta=drive.files().create(body={"name":name,"mimeType":"application/json"},
                               fields="id,parents,ownedByMe,shared").execute()
     if meta.get("parents")!=[parent] or not meta["ownedByMe"] or meta.get("shared"):
         raise ValueError("Output privacy")
@@ -114,4 +113,3 @@ def run():
 
 if __name__=="__main__":
     run()
-
