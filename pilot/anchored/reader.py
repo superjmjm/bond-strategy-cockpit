@@ -141,7 +141,9 @@ def finish(meta,index,candidates,review,visible):
         cards=cards,unmerged_clues=clues,rejected=rejected,numeric_warnings=warnings,s3=intercepted)
 
 def read_report(pdf,meta,db,model=MODEL,offline=False,invoke=ask):
-    idx=index_pdf(pdf)
+    return read_index(index_pdf(pdf),meta,db,model,offline,invoke)
+
+def read_index(idx,meta,db,model=MODEL,offline=False,invoke=ask):
     if not idx["paragraphs"]: raise ValueError("S0: no extractable text")
     first,r1=cached_call(db,model,"stage1",S1,dict(report=meta,paragraphs=idx["paragraphs"]),STAGE1,offline,invoke)
     valid={p["pid"] for p in idx["paragraphs"]}
@@ -185,4 +187,3 @@ def main():
     write_new(args.output,result)
 
 if __name__=="__main__": main()
-

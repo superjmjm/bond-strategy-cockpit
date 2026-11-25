@@ -25,4 +25,5 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
           PYTHONPATH: .
+          INDEX_SHA256: afcf887556aa022010216827c8a8fa477cfb463a53b463ae1defcdae5d0cefb8
         run: python pilot/anchored/trial.py

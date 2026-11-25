@@ -1,15 +1,16 @@
 """Runs only the sealed 18-PDF trial. No production writes or public report data."""
 import hashlib
+import gzip
 import io
 import json
 import os
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
-from reader import open_cache, read_report, digest, encode
+from reader import open_cache, read_index, digest, encode
 from scripts.report_io import drive_service
 
 HERE = Path(__file__).parent
@@ -26,33 +27,41 @@ def private_parent(drive):
         raise ValueError("Unexpected trial destination")
     return parents[0]
 
-def save(drive,parent,name,value):
+def private_file(drive,parent,name,mime):
     # File-scoped OAuth can verify sibling metadata but cannot enumerate the parent.
     # Compare the new empty file's actual parent and ownership before uploading any content.
-    meta=drive.files().create(body={"name":name,"mimeType":"application/json"},
+    meta=drive.files().create(body={"name":name,"mimeType":mime},
                               fields="id,parents,ownedByMe,shared").execute()
     if meta.get("parents")!=[parent] or not meta["ownedByMe"] or meta.get("shared"):
         raise ValueError("Output privacy")
+    return meta["id"]
+
+def save(drive,parent,name,value):
+    file_id=private_file(drive,parent,name,"application/json")
     media=MediaIoBaseUpload(io.BytesIO(encode(value).encode()),mimetype="application/json")
-    drive.files().update(fileId=meta["id"],media_body=media).execute(num_retries=2)
+    drive.files().update(fileId=file_id,media_body=media).execute(num_retries=2)
 
-def load_pdf(drive,row):
-    for fid in dict.fromkeys([row["pdf_id"],*row.get("pdf_candidates",[])]):
-        try: data=drive.files().get_media(fileId=fid,supportsAllDrives=True).execute(num_retries=2)
-        except HttpError as err:
-            if err.resp.status in (403,404): continue
-            raise
-        if hashlib.sha256(data).hexdigest()!=row["sha256"]:
-            raise ValueError("Source fingerprint differs")
-        return data
-    raise ValueError("No accessible matching original")
+def sealed_indices(drive,parent,prefix):
+    file_id=private_file(drive,parent,prefix+"-source-index.json.gz","application/gzip")
+    until=time.monotonic()+1200
+    while time.monotonic()<until:
+        status=drive.files().get(fileId=file_id,fields="size,ownedByMe,shared,parents").execute()
+        if not status["ownedByMe"] or status.get("shared") or status.get("parents")!=[parent]:
+            raise ValueError("Source receipt privacy")
+        if int(status.get("size",0))>0:
+            data=drive.files().get_media(fileId=file_id).execute(num_retries=2)
+            if hashlib.sha256(data).hexdigest()!=os.environ["INDEX_SHA256"]:
+                raise ValueError("Frozen input digest")
+            return json.loads(gzip.decompress(data))
+        time.sleep(8)
+    raise TimeoutError("Waiting for authenticated S0 receipt")
 
-def process(pdf,meta,directory):
-    path=directory/(hashlib.sha256(pdf).hexdigest()+".db")
+def process(index,meta,directory):
+    path=directory/(index["report_id"]+".db")
     db=open_cache(path)
     try:
-        result=read_report(pdf,meta,db)
-        replay=read_report(pdf,meta,db,offline=True)
+        result=read_index(index,meta,db)
+        replay=read_index(index,meta,db,offline=True)
     finally: db.close()
     if digest(result)!=digest(replay): raise ValueError("Replay differs")
     return result
@@ -71,15 +80,17 @@ def run():
     manifest=dict(commit=os.environ["GITHUB_SHA"],reference_sha256=study["reference_sha256"],
                   reference_type=study["reference_type"],reports=[])
     prepared=[]
-    for i,row in enumerate(rows,1):
+    indices=sealed_indices(drive,parent,prefix)
+    if [x["report_id"] for x in indices]!=[r["report_id"] for r in rows]:
+        raise ValueError("Input report order or identity")
+    for i,(row,index) in enumerate(zip(rows,indices),1):
         raw=archive[row["report_id"]]
-        pdf=load_pdf(drive,raw)
         meta={k:row[k] for k in ("broker","series","report_date")}
         meta["title"]=raw["title"]
-        prepared.append((i,pdf,meta))
-    print("Verified original PDFs:",len(prepared),flush=True)
+        prepared.append((i,index,meta))
+    print("Verified indexed originals:",len(prepared),flush=True)
     with tempfile.TemporaryDirectory() as td, ThreadPoolExecutor(max_workers=3) as pool:
-        jobs={pool.submit(process,pdf,meta,Path(td)):i for i,pdf,meta in prepared}
+        jobs={pool.submit(process,index,meta,Path(td)):i for i,index,meta in prepared}
         for job in as_completed(jobs):
             i=jobs[job]
             try:
