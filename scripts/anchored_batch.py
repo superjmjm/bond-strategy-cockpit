@@ -1,6 +1,6 @@
 """Read archived/inbox reports with the accepted two-pass reader; publish only card evidence."""
 import argparse
-from datetime import date, datetime
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -9,7 +9,7 @@ import re
 import sys
 import tempfile
 
-from report_io import CN, INBOX, ROOT, download_cached, drive_service, env, list_pdfs
+from report_io import INBOX, ROOT, download_cached, drive_service, env, list_pdfs
 from report_scope import weekly_broker
 
 sys.path.insert(0, str(ROOT / "pilot" / "anchored"))
@@ -32,8 +32,13 @@ def public_report(result, filename):
     output = result["output"]
     report = {k:output[k] for k in ("broker","series","title","report_date","report_id","report_category")}
     report["source_file"] = filename
+    paragraphs = {p["pid"]:p for p in result["s0"]["paragraphs"]}
     report["cards"] = []
     for card in output["cards"]:
+        for e in card["evidence"]:
+            original=paragraphs[e["pid"]]
+            if original["text"]!=e["text"] or original["page"]!=e["page"]:
+                raise ValueError("Evidence does not match indexed PDF")
         item = {k:card[k] for k in ("bucket","raw_tenor","direction","vote_eligible","logic","action","cond",
                                     "account_note","horizon","target_low","target_high","target_unit","target_note",
                                     "risk","drivers","instrument_scope")}

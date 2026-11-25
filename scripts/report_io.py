@@ -187,7 +187,10 @@ def fetch_nxny(rid):
 
 
 def name_for(title):
-    return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", title).strip(" .")[:80]
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", title).strip(" .")
+    if len(name) > 80 and re.search(r"-\d{6}$", name):
+        return name[:73] + name[-7:]
+    return name[:80]
 
 
 def fetch(drive, folder, *, archive_only=False):
@@ -196,6 +199,9 @@ def fetch(drive, folder, *, archive_only=False):
         raise ValueError("NXNY report ID must be numeric")
     INBOX.mkdir(exist_ok=True)
     records = json.loads((ROOT/"dashboard_data.json").read_text("utf8"))["records"]
+    anchored = ROOT/"anchored_reports.json"
+    if anchored.exists():
+        records = records + json.loads(anchored.read_bytes())
     known = {row.get("report_id") for row in records}
     published_ids = {
         match[1] for row in records if not row.get("is_demo")
@@ -217,7 +223,7 @@ def fetch(drive, folder, *, archive_only=False):
         if target and metadata.get("nxny_id") != target:
             continue
         digest = metadata.get("sha256")
-        if digest and digest not in known and weekly_broker(row["name"]):
+        if digest and (digest not in known or (archive_only and target)) and weekly_broker(row["name"]):
             try:
                 raw = download_cached(drive,row)
                 if hashlib.sha256(raw).hexdigest() != digest:

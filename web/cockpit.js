@@ -31,10 +31,16 @@ function chart(){
   const canvas=el("curve");if(!canvas)return;
   const keys=["1-3Y","5-7Y","10Y","30Y"],vals=keys.map(k=>db.benchmark.benchmark_yields?.[k]);
   if(!vals.every(Number.isFinite))return;
+  const weeks=el("week").value, axis=db.buckets.slice(1,5);
+  const ranges=db.reports.filter(r=>monday(r.report_date)===weeks).flatMap(r=>r.cards)
+    .filter(c=>axis.includes(c.bucket)&&c.target_unit==="%"&&Number.isFinite(c.target_low)&&Number.isFinite(c.target_high));
   const width=canvas.clientWidth||400,height=155,ratio=window.devicePixelRatio||1;
   canvas.width=width*ratio;canvas.height=height*ratio;
-  const ctx=canvas.getContext("2d");ctx.scale(ratio,ratio);const lo=Math.min(...vals),hi=Math.max(...vals);
+  const ctx=canvas.getContext("2d");ctx.scale(ratio,ratio);const lo=Math.min(...vals,...ranges.map(c=>c.target_low)),hi=Math.max(...vals,...ranges.map(c=>c.target_high));
   const pts=vals.map((v,i)=>[32+i*(width-64)/3,103-65*(v-lo)/(hi-lo||1)]);
+  const y=v=>103-65*(v-lo)/(hi-lo||1);
+  ranges.forEach(c=>{const x=pts[axis.indexOf(c.bucket)][0],t=y(c.target_high),b=y(c.target_low);
+    ctx.fillStyle="rgba(186,135,56,.40)";ctx.fillRect(x-9,t-1,18,Math.max(3,b-t+2))});
   ctx.strokeStyle="#21816d";ctx.lineWidth=2;ctx.beginPath();pts.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.stroke();
   ctx.font="13px sans-serif";ctx.textAlign="center";pts.forEach(([x,y],i)=>{ctx.fillStyle="#185b51";ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fill();ctx.fillText(vals[i].toFixed(2)+"%",x,y-12);ctx.fillText(keys[i],x,137)});
 }
@@ -57,16 +63,18 @@ function render(){
    const names=[...new Set([...reports.map(r=>r.broker),...legacy.map(r=>r.broker)])], broker=names.includes(selected)?selected:names[0];
    const matrix=names.map(n=>['<a href="'+link("broker",n)+'">'+esc(n)+'</a>',...bucketList.map(b=>{const cs=current.filter(c=>c.broker===n&&c.bucket===b);
      return cs.map(c=>'<span class="heat '+(c.direction>0?'up':c.direction<0?'down':'')+'">'+sentiment(c)+'</span> '+(c.vote_eligible?'':badge)).join('<br>')||'—'})]);
-   html='<h1>券商画像</h1>'+panel("本周观点热力图",table(["券商",...bucketList],matrix))+pills("broker",names,broker)+(current.filter(c=>c.broker===broker).map(card).join("")||empty)+emptyReports(reports.filter(r=>r.broker===broker))+archive(legacy.filter(r=>r.broker===broker));
+   const timeline=[...new Set(db.reports.filter(r=>r.broker===broker&&monday(r.report_date)<=week).map(r=>monday(r.report_date)))].slice(0,8);
+   const history=timeline.map(w=>[esc(w),...bucketList.map(b=>all.filter(c=>c.broker===broker&&c.bucket===b&&monday(c.report_date)===w).map(c=>esc(sentiment(c))+(c.vote_eligible?"":" "+badge)).join("<br>")||"—")]);
+   html='<h1>券商画像</h1>'+panel("本周观点热力图",table(["券商",...bucketList],matrix))+pills("broker",names,broker)+(current.filter(c=>c.broker===broker).map(card).join("")||empty)+emptyReports(reports.filter(r=>r.broker===broker))+archive(legacy.filter(r=>r.broker===broker))+(history.length?panel(esc(broker)+"历周观点",table(["报告周",...bucketList],history)):"");
  }else{
    const rows=[],turns=[];
    for(const b of bucketList){
      const cs=current.filter(c=>c.bucket===b), voters=latest(cs),previous=new Map(latest(prior.filter(c=>c.bucket===b)).map(c=>[c.broker,c]));
      rows.push(['<a href="'+link("tenor",b)+'">'+esc(b)+'</a>',...stats(cs),String(cs.length)]);
-     for(const c of voters){const old=previous.get(c.broker);if(old&&c.direction!==old.direction)turns.push([esc(c.broker),esc(b),esc(old.report_date),sentiment(old)+' → '+sentiment(c)])}
+     for(const c of voters){const old=current.find(p=>p.broker===c.broker&&p.bucket===b&&p.vote_eligible===true&&p.report_date<c.report_date)||previous.get(c.broker);if(old&&c.direction!==old.direction)turns.push([esc(c.broker),esc(b),esc(old.report_date),sentiment(old)+' → '+sentiment(c)])}
    }
    const quote=db.benchmark, values=Object.entries(quote.benchmark_yields||{}).map(([k,v])=>k+' '+v+'%').join('，');
-   html='<h1>周度驾驶舱</h1>'+panel("期限观点矩阵",table(["观点桶","共识均分","多 / 中 / 空家数¹","分歧度 σ","观点卡"],rows)+'<small>每桶每家取本周最新可计票观点。¹ 曲线桶依次为看平、中性、看陡。</small>')+'<div class="twocol">'+panel("中债国债收益率曲线",'<canvas id="curve" role="img" aria-label="'+esc(values)+'"></canvas><small>'+esc(quote.benchmark_as_of||"待更新")+' · '+esc(quote.benchmark_note||"")+'</small>')+panel("本周转向",turns.length?table(["券商","观点桶","前次日期","方向变化"],turns):'<p class="dim">本周暂无可比方向变化。</p>')+'</div>'+panel("本周研报",reports.map(r=>'<p><a href="'+link("broker",r.broker)+'">'+esc(r.broker)+'</a> · '+esc(r.title)+' · '+r.cards.length+' 张卡'+(!r.cards.length&&r.report_category==="资金流动性周报"?' · 资金专题·未涉国债策略':'')+'</p>').join("")||empty)+archive(legacy);
+   html='<h1>周度驾驶舱</h1>'+panel("期限观点矩阵",table(["观点桶","共识均分","多 / 中 / 空家数¹","分歧度 σ","观点卡"],rows)+'<small>每桶每家取本周最新可计票观点。¹ 曲线桶依次为看平、中性、看陡。</small>')+'<div class="twocol">'+panel("中债国债收益率曲线",'<canvas id="curve" role="img" aria-label="'+esc(values)+'"></canvas><small>'+esc(quote.benchmark_as_of||"待更新")+' · '+esc(quote.benchmark_note||"")+'。绿线为基准，金色区间为报告给出的明确收益率目标。</small>')+panel("本周转向",turns.length?table(["券商","观点桶","前次日期","方向变化"],turns):'<p class="dim">本周暂无可比方向变化。</p>')+'</div>'+panel("本周研报",reports.map(r=>'<p><a href="'+link("broker",r.broker)+'">'+esc(r.broker)+'</a> · '+esc(r.title)+' · '+r.cards.length+' 张卡'+(!r.cards.length&&r.report_category==="资金流动性周报"?' · 资金专题·未涉国债策略':'')+'</p>').join("")||empty)+archive(legacy);
  }
  el("content").innerHTML=html;chart();document.querySelectorAll("nav a").forEach(a=>{a.removeAttribute("aria-current");if(a.hash==="#"+(p||"weekly"))a.setAttribute("aria-current","page")});
 }
