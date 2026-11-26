@@ -248,6 +248,8 @@ def fetch(drive, folder, *, archive_only=False):
     days = int(os.environ.get("REPORT_LOOKBACK_DAYS") or "7")
     if not 1 <= days <= 56:
         raise ValueError("REPORT_LOOKBACK_DAYS must be in 1..56")
+    today = datetime.now(CN).date()
+    cutoff = today - timedelta(days=days)
     records = anchored_rows if days > 7 else records + anchored_rows
     known = {row.get("report_id") for row in records}
     published_ids = {
@@ -275,6 +277,8 @@ def fetch(drive, folder, *, archive_only=False):
         try:
             manual = manual_identity(row["name"]) if not target else None
             if manual:
+                if days > 7 and not cutoff <= date.fromisoformat(manual["report_date"]) <= today:
+                    continue
                 if digest in anchored_hashes:
                     continue
                 raw = download_cached(drive, row)
@@ -295,7 +299,7 @@ def fetch(drive, folder, *, archive_only=False):
             continue
         if days > 7:
             match = re.search(r"-(\d{6})\.pdf$", row["name"], re.I)
-            if not match or not 0 <= (datetime.now(CN).date() - datetime.strptime(match[1], "%y%m%d").date()).days <= days:
+            if not match or not 0 <= (today - datetime.strptime(match[1], "%y%m%d").date()).days <= days:
                 continue
         if digest and (digest not in known or (archive_only and target)) and weekly_broker(row["name"]):
             try:
@@ -311,10 +315,10 @@ def fetch(drive, folder, *, archive_only=False):
                 failures.append(type(error).__name__)
     skip_ids = published_ids | set(by_id)
     if days > 7 and not target and recovered < limit:
-        today = datetime.now(CN).date()
-        recovered += recover_history(drive, today - timedelta(days=days), today, skip_ids, set(known), limit - recovered)
+        recovered += recover_history(drive, cutoff, today, skip_ids, set(known), limit - recovered)
     reports, pages = [], 0
-    if recovered < limit and not archive_only and (not target or target not in by_id):
+    drain_archive = days > 7 and recovered > 0 and not target
+    if recovered < limit and not archive_only and not drain_archive and (not target or target not in by_id):
         reports, pages, issue = scan_listing(datetime.now(CN).date(), skip_ids, prior, limit - recovered, target, days)
         if issue:
             failures.append("discovery: " + issue)
