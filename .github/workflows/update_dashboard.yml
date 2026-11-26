@@ -91,7 +91,7 @@ jobs:
           TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
           TINYFISH_PROFILE_ID: ${{ secrets.TINYFISH_PROFILE_ID }}
           REPORT_LOOKBACK_DAYS: ${{ (inputs.history_backfill || contains(github.event.head_commit.message, '[backfill-weeklies]')) && '56' || '7' }}
-          MAX_NEW_PDFS: ${{ vars.MAX_NEW_PDFS || '15' }}
+          MAX_NEW_PDFS: ${{ (inputs.history_backfill || contains(github.event.head_commit.message, '[backfill-weeklies]')) && '10' || vars.MAX_NEW_PDFS || '15' }}
           HAS_REVIEWED_EXTRACTION: ${{ inputs.reviewed_extraction != '' }}
         run: |
           rc=0
@@ -132,6 +132,7 @@ jobs:
           echo "code=$rc" >> "$GITHUB_OUTPUT"
           if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
       - name: Continue historical batches after checkpointing verified results
+        id: backfill
         if: env.DRIVE_ONLY != 'true' && (inputs.history_backfill || contains(github.event.head_commit.message, '[backfill-weeklies]')) && steps.fetch.outputs.code == '0' && steps.extract.outputs.code == '0'
         env:
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
@@ -139,23 +140,37 @@ jobs:
           TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
           TINYFISH_PROFILE_ID: ${{ secrets.TINYFISH_PROFILE_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          MAX_NEW_PDFS: '15'
+          MAX_NEW_PDFS: '10'
           REPORT_LOOKBACK_DAYS: '56'
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           for batch in {1..5}; do
-            if ! git diff --quiet -- anchored_reports.json; then
-              python scripts/build_public.py "$RUNNER_TEMP/backfill-proof" --production
-              git commit -m 'Backfill verified weekly reports' -- anchored_reports.json
+            if ! git diff --quiet -- anchored_reports.json ignored_nxny_ids.json; then
+              if ! git diff --quiet -- anchored_reports.json; then
+                python scripts/build_public.py "$RUNNER_TEMP/backfill-proof" --production
+              fi
+              git commit -m 'Checkpoint weekly report intake' -- anchored_reports.json ignored_nxny_ids.json
               git push origin "HEAD:refs/heads/$BRANCH"
+              echo "changed=true" >> "$GITHUB_OUTPUT"
             fi
             find reports_inbox -maxdepth 1 -type f -name '*.pdf' -delete
-            python scripts/report_io.py fetch
-            if ! compgen -G 'reports_inbox/*.pdf' >/dev/null; then exit 0; fi
-            python scripts/report_io.py backup
-            python scripts/anchored_batch.py
+            fetch_rc=0
+            extract_rc=0
+            python scripts/report_io.py fetch || fetch_rc=$?
+            if [[ "$fetch_rc" != 0 && "$fetch_rc" != 2 ]]; then exit "$fetch_rc"; fi
+            if compgen -G 'reports_inbox/*.pdf' >/dev/null; then
+              python scripts/report_io.py backup
+              python scripts/anchored_batch.py || extract_rc=$?
+              if [[ "$extract_rc" != 0 && "$extract_rc" != 2 ]]; then exit "$extract_rc"; fi
+            elif [[ "$fetch_rc" == 0 ]] && git diff --quiet -- ignored_nxny_ids.json; then
+              exit 0
+            fi
+            if [[ "$fetch_rc" == 2 || "$extract_rc" == 2 ]]; then
+              echo "code=2" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           done
           echo "::notice::Batch safety limit reached; check remaining eligible reports."
       - name: Verify the selected report and PDF page references
@@ -170,17 +185,23 @@ jobs:
       - name: Verify the Drive batch can build the public A snapshot
         if: env.DRIVE_ONLY == 'true'
         run: python scripts/build_public.py "$RUNNER_TEMP/drive-proof" --production
-      - name: Commit only changed dashboard data
+      - name: Commit only changed dashboard data and ignore state
         id: commit
         run: |
           set -euo pipefail
-          git add -- dashboard_data.json anchored_reports.json
-          if git diff --cached --quiet; then echo "Dashboard unchanged"; exit 0; fi
+          git add -- dashboard_data.json anchored_reports.json ignored_nxny_ids.json
+          if git diff --cached --quiet; then
+            if [[ "${{ steps.backfill.outputs.changed }}" == 'true' ]]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+            echo "Dashboard and ignore state unchanged since the last checkpoint"
+            exit 0
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'Update bond strategy dashboard' -- dashboard_data.json anchored_reports.json
           git fetch origin "$BRANCH"
-          if ! git diff --quiet HEAD^ FETCH_HEAD -- dashboard_data.json anchored_reports.json; then
+          if ! git diff --quiet HEAD^ FETCH_HEAD -- dashboard_data.json anchored_reports.json ignored_nxny_ids.json; then
             echo "::error::Upstream data changed during extraction. Run again to merge from the latest snapshot."
             exit 1
           fi
@@ -188,7 +209,7 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
           echo "changed=true" >> "$GITHUB_OUTPUT"
       - name: Report incomplete batch after publishing successes
-        if: steps.fetch.outputs.code == '2' || steps.extract.outputs.code == '2'
+        if: steps.fetch.outputs.code == '2' || steps.extract.outputs.code == '2' || steps.backfill.outputs.code == '2'
         run: |
           echo "::error::Partial batch. Successful records are committed. Failed PDFs can be retried."
           exit 1
