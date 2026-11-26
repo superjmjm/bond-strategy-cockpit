@@ -1,0 +1,109 @@
+name: Stage verified CITICS Drive originals
+
+on:
+  push:
+    branches: [verify/drive-citics-staging]
+    paths: [.github/workflows/stage_citics_drive.yml]
+
+permissions: {}
+concurrency:
+  group: stage-citics-drive
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'google-api-python-client>=2.150,<3' 'requests>=2.32.5,<3'
+      - name: Verify production Drive visibility and wait for private copies
+        env:
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+        run: |
+          python - <<'PY'
+          import io
+          import os
+          import time
+
+          from googleapiclient.http import MediaIoBaseUpload
+          from scripts.report_io import drive_service, list_pdfs
+          from scripts.report_scope import manual_identity
+
+          expected = {
+              "20260907": "3977f6eddf", "20260914": "f74a7796af",
+              "20260921": "5d21aa9728", "20260928": "dadf3adf1d",
+              "20261018": "e51e7ea0e2", "20261026": "bc32f11845",
+              "20261109": "7f7be9b7e8", "20261116": "5e3929422a",
+              "20261123": "4e96217c7b",
+          }
+          folder = os.environ["GDRIVE_FOLDER_ID"]
+          drive = drive_service()
+          files = drive.files()
+          visible = {
+              identity["report_date"].replace("-", "")
+              for row in list_pdfs(drive, folder)
+              if (identity := manual_identity(row["name"]))
+          }
+          missing = expected.keys() - visible
+          print(f"production_visibility={len(expected) - len(missing)}/{len(expected)}", flush=True)
+          slot_ids = {}
+          for stamp in sorted(missing):
+              name = f"citics-drive-intake-20261126-{stamp}.part"
+              rows = files.list(
+                  q=f"'{folder}' in parents and trashed=false and name='{name}'",
+                  fields="files(id),nextPageToken", pageSize=2
+              ).execute()
+              if rows.get("nextPageToken") or len(rows["files"]) > 1:
+                  raise SystemExit("staging_slot_ambiguous")
+              if rows["files"]:
+                  slot_ids[stamp] = rows["files"][0]["id"]
+                  continue
+              row = files.create(
+                  body={"name":name,"parents":[folder],"appProperties":{"citics_intake":"20261126"}},
+                  media_body=MediaIoBaseUpload(io.BytesIO(b"Awaiting original PDF"), mimetype="application/octet-stream"),
+                  fields="id", supportsAllDrives=True
+              ).execute()
+              slot_ids[stamp] = row["id"]
+
+          print(f"private_slots_ready={len(slot_ids)}", flush=True)
+          remaining = dict(slot_ids)
+          for attempt in range(24):
+              for stamp, file_id in list(remaining.items()):
+                  row = files.get(fileId=file_id, fields="name,mimeType,sha256Checksum,trashed",
+                                  supportsAllDrives=True).execute(num_retries=2)
+                  if not row.get("trashed") and row["mimeType"] == "application/pdf":
+                      identity = manual_identity(row["name"])
+                      if not identity or identity["report_date"].replace("-", "") != stamp:
+                          raise SystemExit("staging_identity_mismatch")
+                      if not row.get("sha256Checksum", "").startswith(expected[stamp]):
+                          raise SystemExit("staging_checksum_mismatch")
+                      del remaining[stamp]
+              if not remaining:
+                  break
+              time.sleep(25)
+          if remaining:
+              raise SystemExit(f"staging_wait_expired missing={len(remaining)}")
+          print(f"verified_private_copies={len(slot_ids)}", flush=True)
+          PY
+      - name: Dispatch the existing Drive-only production workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for status in queued in_progress pending requested waiting; do
+            active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow update_dashboard.yml --branch main --status "$status" --limit 1 --json databaseId --jq length)
+            if [[ "$active" != "0" ]]; then
+              echo "::error::A production update is already active."
+              exit 1
+            fi
+          done
+          gh workflow run update_dashboard.yml --repo "$GITHUB_REPOSITORY" --ref main -f trigger_source=drive-only
