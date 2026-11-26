@@ -195,6 +195,7 @@ def name_for(title):
 
 
 def recover_history(drive, cutoff, today, skip_ids, published, limit):
+    from googleapiclient.errors import HttpError
     files = drive.files()
     index = files.list(q="trashed=false and name='研报完整目录.json' and mimeType='application/json'",
                        fields="files(id),nextPageToken", pageSize=2).execute(num_retries=2)
@@ -204,23 +205,30 @@ def recover_history(drive, cutoff, today, skip_ids, published, limit):
     catalog = json.loads(files.get_media(fileId=rows[0]["id"]).execute(num_retries=2))
     count = 0
     for report in catalog["reports"]:
-        title, rid = report.get("title", ""), str(report.get("report_id") or "")
+        title, rid = re.sub(r"\.pdf$", "", report.get("title", ""), flags=re.I), str(report.get("report_id") or "")
         digest = report.get("sha256")
-        if (not rid.isdigit() or rid in skip_ids or digest in published or not weekly_broker(title)
+        if (rid in skip_ids or digest in published or not weekly_broker(title)
                 or not re.fullmatch(r"[0-9a-f]{64}", digest or "") or not report.get("pdf_id")):
             continue
         stamp = re.search(r"-(\d{6})$", title)
         if not stamp or not cutoff <= datetime.strptime(stamp[1], "%y%m%d").date() <= today:
             continue
-        row = files.get(fileId=report["pdf_id"], fields="id,size,md5Checksum,trashed",
-                        supportsAllDrives=True).execute(num_retries=2)
+        try:
+            row = files.get(fileId=report["pdf_id"], fields="id,size,md5Checksum,trashed",
+                            supportsAllDrives=True).execute(num_retries=2)
+        except HttpError as exc:
+            if exc.resp.status == 404:
+                continue
+            raise
         if row.get("trashed"):
             continue
         raw = download_cached(drive, row)
         if hashlib.sha256(raw).hexdigest() != digest:
             raise ValueError("Historical catalog digest mismatch")
-        (INBOX / f"{rid}-{name_for(title)}.pdf").write_bytes(raw)
-        skip_ids.add(rid)
+        prefix = rid + "-" if rid.isdigit() else ""
+        (INBOX / f"{prefix}{name_for(title)}.pdf").write_bytes(raw)
+        if rid.isdigit():
+            skip_ids.add(rid)
         published.add(digest)
         count += 1
         if count >= limit:
