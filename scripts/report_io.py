@@ -8,15 +8,16 @@ import json
 import os
 import re
 import sys
+import tempfile
 from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
 
 import requests
 
 if __package__:
-    from .report_scope import manual_identity, weekly_broker
+    from .report_scope import manual_identity, non_pdf_suffix, weekly_broker
 else:
-    from report_scope import manual_identity, weekly_broker
+    from report_scope import manual_identity, non_pdf_suffix, weekly_broker
 
 ROOT = Path(__file__).resolve().parents[1]
 INBOX = ROOT / "reports_inbox"
@@ -28,6 +29,28 @@ CN = timezone(timedelta(hours=8))
 
 class NXNYDownloadError(ValueError):
     """An error identified by fixed codes safe to emit in production logs."""
+
+
+class NonPDFReport(Exception):
+    """The detail page explicitly identifies an attachment as non-PDF."""
+
+
+def declared_report_format(text):
+    match = re.search(r"格式\s*[：:]\s*\.?([A-Za-z0-9]{1,12})(?![A-Za-z0-9])", text)
+    return match[1].lower() if match else None
+
+
+def save_ignored_ids(ignored):
+    path = ROOT / "ignored_nxny_ids.json"
+    with tempfile.NamedTemporaryFile(dir=ROOT, prefix=".ignored-nxny-", delete=False, mode="w", encoding="utf-8") as output:
+        json.dump(ignored, output, sort_keys=True, indent=2)
+        output.write("\n")
+    os.replace(output.name, path)
+
+
+def ignore_non_pdf(ignored, rid, extension):
+    ignored[rid] = extension
+    print(f"Skipped non-PDF report {rid} (format={extension})")
 
 
 def env(key):
@@ -83,6 +106,8 @@ def parse_listing(body):
         if not match or 'class="rlist"' not in block:
             continue
         title = html.unescape(match[3])
+        # Format labels can be split across adjacent elements on the listing.
+        format_label = declared_report_format(html.unescape(re.sub(r"<[^>]*>", " ", block)))
         try:
             day = datetime.strptime(title.rsplit("-", 1)[-1], "%y%m%d").date()
         except ValueError:
@@ -92,13 +117,14 @@ def parse_listing(body):
             upload_day = datetime.strptime(uploaded[1], "%Y%m%d").date() if uploaded else None
         except ValueError:
             upload_day = None
-        items[match[2]] = (title, day, upload_day)
+        extension = format_label if format_label and format_label != "pdf" else non_pdf_suffix(title)
+        items[match[2]] = (title, day, upload_day, extension)
     if not items:
         raise ValueError("NXNY list unavailable or structure changed")
     return items
 
 
-def scan_listing(today, seen_ids, archived_names, limit, target="", days=7):
+def scan_listing(today, seen_ids, archived_names, limit, ignored, target="", days=7):
     """Read public list pages in upload order; never download a PDF here."""
     cutoff = today - timedelta(days=days)
     reports = []
@@ -118,8 +144,11 @@ def scan_listing(today, seen_ids, archived_names, limit, target="", days=7):
         if fingerprint in fingerprints:
             return reports, page, f"page {page}: repeated listing"
         fingerprints.add(fingerprint)
-        for rid, (title, report_day, _) in items.items():
-            if rid in seen_ids or (target and rid != target):
+        for rid, (title, report_day, _, extension) in items.items():
+            if rid in seen_ids or rid in ignored or (target and rid != target):
+                continue
+            if extension:
+                ignore_non_pdf(ignored, rid, extension)
                 continue
             if not report_day or not cutoff <= report_day <= today or not weekly_broker(title):
                 continue
@@ -130,7 +159,7 @@ def scan_listing(today, seen_ids, archived_names, limit, target="", days=7):
             if len(reports) == limit:
                 return reports, page, None
 
-        uploads = [upload for _, _, upload in items.values()]
+        uploads = [upload for _, _, upload, _ in items.values()]
         if all(upload and upload < cutoff for upload in uploads):
             return reports, page, None
         next_pages = {int(n) for n in re.findall(
@@ -186,6 +215,9 @@ def fetch_nxny(rid):
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(detail, wait_until="domcontentloaded", timeout=45000)
+            extension = declared_report_format(page.locator("body").inner_text(timeout=15000))
+            if extension and extension != "pdf":
+                raise NonPDFReport(extension)
             page.locator("#loginstr2").filter(has_text="退出登录").wait_for(timeout=15000)
             hrefs = page.locator("a[href]").evaluate_all("els => els.map(a=>a.href)")
             link = nxny_download_link(hrefs)
@@ -356,6 +388,10 @@ def fetch(drive, folder, *, archive_only=False, drive_only=False):
         return fetch_drive_only(drive, folder)
     if (target or archive_only) and not re.fullmatch(r"[0-9]{1,12}", target):
         raise ValueError("NXNY report ID must be numeric")
+    ignored = json.loads((ROOT / "ignored_nxny_ids.json").read_bytes())
+    if target in ignored:
+        print(f"Skipped previously confirmed non-PDF report {target} (format={ignored[target]})")
+        return 0
     INBOX.mkdir(exist_ok=True)
     records = json.loads((ROOT/"dashboard_data.json").read_text("utf8"))["records"]
     anchored = ROOT/"anchored_reports.json"
@@ -425,16 +461,19 @@ def fetch(drive, folder, *, archive_only=False, drive_only=False):
                 recovered += 1
             except Exception as error:
                 failures.append(type(error).__name__)
-    skip_ids = published_ids | set(by_id)
+    skip_ids = published_ids | set(by_id) | ignored.keys()
     if days > 7 and not target and recovered < limit:
         today = datetime.now(CN).date()
         recovered += recover_history(drive, today - timedelta(days=days), today, skip_ids, set(known), limit - recovered)
     reports, pages = [], 0
     if recovered < limit and not archive_only and (not target or target not in by_id):
-        reports, pages, issue = scan_listing(datetime.now(CN).date(), skip_ids, prior, limit - recovered, target, days)
+        previous_ignored_count = len(ignored)
+        reports, pages, issue = scan_listing(datetime.now(CN).date(), skip_ids, prior, limit - recovered, ignored, target, days)
+        if len(ignored) != previous_ignored_count:
+            save_ignored_ids(ignored)
         if issue:
             failures.append("discovery: " + issue)
-        if target and not reports and target not in published_ids:
+        if target and not reports and target not in published_ids and target not in ignored:
             failures.append("Selected report is absent from the eligible listing")
     downloaded = 0
     for rid,title in reports:
@@ -443,10 +482,15 @@ def fetch(drive, folder, *, archive_only=False, drive_only=False):
             continue
         if downloaded >= limit:
             break
-        downloaded += 1
         try:
             (INBOX/filename).write_bytes(fetch_nxny(rid))
+            downloaded += 1
+        except NonPDFReport as skipped:
+            ignore_non_pdf(ignored, rid, str(skipped))
+            save_ignored_ids(ignored)
+            continue
         except Exception as error:
+            downloaded += 1
             reason = str(error) if isinstance(error, NXNYDownloadError) else type(error).__name__
             failures.append(f"{rid}: {reason}")
             # An expired browser session should consume at most one attempted download.
