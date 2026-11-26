@@ -26,6 +26,10 @@ MAX_BYTES = 48_000_000
 CN = timezone(timedelta(hours=8))
 
 
+class NXNYDownloadError(ValueError):
+    """An error identified by fixed codes safe to emit in production logs."""
+
+
 def env(key):
     value = os.environ.get(key, "").strip()
     if not value:
@@ -49,7 +53,7 @@ def list_pdfs(drive, folder):
     while True:
         page = drive.files().list(q=f"'{folder}' in parents and trashed=false and mimeType='application/pdf'",
             pageSize=1000, pageToken=token, supportsAllDrives=True, includeItemsFromAllDrives=True,
-            fields="nextPageToken,files(id,name,md5Checksum,size,modifiedTime,appProperties)",
+            fields="nextPageToken,files(id,name,md5Checksum,sha256Checksum,size,modifiedTime,appProperties)",
             orderBy="modifiedTime desc").execute(num_retries=2)
         result.extend(page.get("files", []))
         token = page.get("nextPageToken")
@@ -139,6 +143,30 @@ def scan_listing(today, seen_ids, archived_names, limit, target="", days=7):
     return reports, max_pages, "list page limit reached before completing discovery"
 
 
+def nxny_download_link(hrefs):
+    pattern = r"^https://(vip\d+)\.nxny\.com/download/download\.aspx(?:\?|$)"
+    controls = {url: match[1].lower() for url in hrefs if (match := re.match(pattern, url, re.I))}
+    links = [url for url, host in controls.items() if host == "vip6"]
+    if len(links) != 1:
+        other_count = len(controls) - len(links)
+        raise NXNYDownloadError(f"download_link_count={len(links)} alternate_node_link_count={other_count}")
+    return links[0]
+
+
+def nxny_response_code(data):
+    # Check explicitly worded limit messages. Generic HTML or 429 alone cannot
+    # distinguish quota exhaustion from other conditions.
+    sample = bytes(data[:65536])
+    for encoding in ("utf-8", "gb18030"):
+        message = html.unescape(sample.decode(encoding, errors="ignore"))
+        message = re.sub(r"\s+", "", re.sub(r"<[^>]*>", "", message))
+        if re.search(r"(?:下载次数|下载额度|下载数量).{0,18}(?:已达上限|达到上限|已用完|已耗尽)|(?:已达|达到|超过).{0,12}(?:每日|今日|当天).{0,10}下载上限", message):
+            return "non_pdf_response reason=quota_message"
+        if re.search(r"下载.{0,10}(?:过于频繁|间隔太短)|请.{0,15}(?:秒后|分钟后).{0,12}(?:再次下载|重试)", message):
+            return "non_pdf_response reason=cooldown_message"
+    return "non_pdf_response"
+
+
 def fetch_nxny(rid):
     # Use the existing authenticated cloud browser profile; PDF URLs stay in that browser.
     from playwright.sync_api import sync_playwright
@@ -160,15 +188,16 @@ def fetch_nxny(rid):
             page.goto(detail, wait_until="domcontentloaded", timeout=45000)
             page.locator("#loginstr2").filter(has_text="退出登录").wait_for(timeout=15000)
             hrefs = page.locator("a[href]").evaluate_all("els => els.map(a=>a.href)")
-            links = {u for u in hrefs if re.match(r"^https://vip6\.nxny\.com/download/download\.aspx(?:\?|$)",u,re.I)}
-            if len(links) != 1:
-                raise ValueError("No unique NXNY PDF download control")
+            link = nxny_download_link(hrefs)
             cdp = context.new_cdp_session(page)
             frame = cdp.send("Page.getFrameTree")["frameTree"]["frame"]["id"]
-            result = cdp.send("Network.loadNetworkResource", {"frameId":frame, "url":links.pop(),
+            result = cdp.send("Network.loadNetworkResource", {"frameId":frame, "url":link,
                     "options":{"disableCache":True,"includeCredentials":True}})["resource"]
             if not result.get("success") or not result.get("stream"):
-                raise IOError("NXNY download failed")
+                status = result.get("httpStatusCode")
+                if status in (401, 403, 429):
+                    raise NXNYDownloadError(f"download_http_status={int(status)}")
+                raise NXNYDownloadError("download_stream_unavailable")
             handle = result["stream"]
             pdf = bytearray()
             try:
@@ -176,15 +205,23 @@ def fetch_nxny(rid):
                     part = cdp.send("IO.read", {"handle":handle,"size":131072})
                     pdf.extend(base64.b64decode(part["data"]) if part.get("base64Encoded") else part["data"].encode())
                     if len(pdf) >= MAX_BYTES:
-                        raise ValueError("PDF exceeds input limit")
+                        raise NXNYDownloadError("pdf_size_limit")
                     if part.get("eof"):
                         break
             finally:
-                cdp.send("IO.close", {"handle":handle})
-            return valid(bytes(pdf))
+                try:
+                    cdp.send("IO.close", {"handle":handle})
+                except Exception:
+                    print("::warning::NXNY download stream cleanup failed")
+            if not pdf.startswith(b"%PDF-"):
+                raise NXNYDownloadError(nxny_response_code(pdf))
+            return bytes(pdf)
     finally:
-        requests.post(api+"/cancel", headers=auth, json={"session_id":session["session_id"]},
-                      timeout=45).raise_for_status()
+        try:
+            requests.post(api+"/cancel", headers=auth, json={"session_id":session["session_id"]},
+                          timeout=45).raise_for_status()
+        except Exception:
+            print("::warning::NXNY browser session cleanup failed")
 
 
 def name_for(title):
@@ -194,7 +231,7 @@ def name_for(title):
     return name[:80]
 
 
-def recover_history(drive, cutoff, today, skip_ids, published, limit):
+def recover_history(drive, cutoff, today, skip_ids, published, limit, *, failures=None):
     from googleapiclient.errors import HttpError
     files = drive.files()
     index = files.list(q="trashed=false and name='研报完整目录.json' and mimeType='application/json'",
@@ -211,33 +248,112 @@ def recover_history(drive, cutoff, today, skip_ids, published, limit):
                 or not re.fullmatch(r"[0-9a-f]{64}", digest or "") or not report.get("pdf_id")):
             continue
         stamp = re.search(r"-(\d{6})$", title)
-        if not stamp or not cutoff <= datetime.strptime(stamp[1], "%y%m%d").date() <= today:
+        if not stamp:
             continue
         try:
+            if not cutoff <= datetime.strptime(stamp[1], "%y%m%d").date() <= today:
+                continue
             row = files.get(fileId=report["pdf_id"], fields="id,size,md5Checksum,trashed",
                             supportsAllDrives=True).execute(num_retries=2)
+            if row.get("trashed"):
+                if failures is not None:
+                    failures.append("Drive catalog PDF: trashed")
+                continue
+            raw = download_cached(drive, row)
+            if hashlib.sha256(raw).hexdigest() != digest:
+                raise ValueError("Historical catalog digest mismatch")
+            prefix = rid + "-" if rid.isdigit() else ""
+            save_recovered(f"{prefix}{name_for(title)}.pdf", raw)
         except HttpError as exc:
             if exc.resp.status == 404:
+                if failures is not None:
+                    failures.append("Drive catalog PDF: unavailable")
                 continue
-            raise
-        if row.get("trashed"):
+            if failures is None:
+                raise
+            failures.append(f"Drive catalog PDF: {type(exc).__name__}")
             continue
-        raw = download_cached(drive, row)
-        if hashlib.sha256(raw).hexdigest() != digest:
-            raise ValueError("Historical catalog digest mismatch")
-        prefix = rid + "-" if rid.isdigit() else ""
-        (INBOX / f"{prefix}{name_for(title)}.pdf").write_bytes(raw)
+        except Exception as exc:
+            if failures is None:
+                raise
+            failures.append(f"Drive catalog PDF: {type(exc).__name__}")
+            continue
         if rid.isdigit():
             skip_ids.add(rid)
         published.add(digest)
         count += 1
-        if count >= limit:
+        if limit is not None and count >= limit:
             break
     return count
 
 
-def fetch(drive, folder, *, archive_only=False):
+def save_recovered(filename, raw):
+    path = INBOX / filename
+    if path.exists() and path.read_bytes() != raw:
+        raise ValueError("Conflicting archive filenames")
+    path.write_bytes(raw)
+
+
+def fetch_drive_only(drive, folder):
+    INBOX.mkdir(exist_ok=True)
+    anchored = ROOT / "anchored_reports.json"
+    known = {row["report_id"] for row in json.loads(anchored.read_bytes())} if anchored.exists() else set()
+    today = datetime.now(CN).date()
+    cutoff = today - timedelta(days=56)
+    manuals, weekly, failures = [], [], []
+    for row in list_pdfs(drive, folder):
+        name = row["name"]
+        try:
+            if manual_identity(name):
+                manuals.append(row)
+            elif weekly_broker(name) and (stamp := re.search(r"-(\d{6})\.pdf$", name, re.I)):
+                if cutoff <= datetime.strptime(stamp[1], "%y%m%d").date() <= today:
+                    weekly.append(row)
+        except ValueError:
+            failures.append("Drive filename: invalid_report_date")
+
+    counts = []
+    for rows in (manuals, weekly):
+        recovered = 0
+        for row in rows:
+            checksums = {row.get("sha256Checksum"), row.get("appProperties", {}).get("sha256")} - {None, ""}
+            try:
+                if len(checksums) > 1:
+                    raise ValueError("Conflicting Drive checksums")
+                if checksums & known:
+                    continue
+                raw = download_cached(drive, row)
+                actual = hashlib.sha256(raw).hexdigest()
+                if checksums and actual not in checksums:
+                    raise ValueError("Drive SHA-256 mismatch")
+                if actual in known:
+                    continue
+                if any(c in row["name"] for c in "/\\"):
+                    raise ValueError("Unsafe Drive filename")
+                save_recovered(row["name"], raw)
+                known.add(actual)
+                recovered += 1
+            except Exception as exc:
+                failures.append(f"Drive folder PDF: {type(exc).__name__}")
+        counts.append(recovered)
+    historical = 0
+    try:
+        historical = recover_history(drive, cutoff, today, set(), known, None, failures=failures)
+    except Exception as exc:
+        failures.append(f"Drive catalog: {type(exc).__name__}")
+    print(f"Drive only: manual={counts[0]}, folder_weeklies={counts[1]}, catalog={historical}, NXNY requests=0")
+    if failures:
+        print("::warning::Drive recovery incomplete: " + ", ".join(failures))
+        return 2
+    return 0
+
+
+def fetch(drive, folder, *, archive_only=False, drive_only=False):
     target = os.environ.get("NXNY_REPORT_ID", "")
+    if drive_only:
+        if target or archive_only:
+            raise ValueError("Drive-only batch cannot be combined with a report ID or archive-only lookup")
+        return fetch_drive_only(drive, folder)
     if (target or archive_only) and not re.fullmatch(r"[0-9]{1,12}", target):
         raise ValueError("NXNY report ID must be numeric")
     INBOX.mkdir(exist_ok=True)
@@ -331,7 +447,8 @@ def fetch(drive, folder, *, archive_only=False):
         try:
             (INBOX/filename).write_bytes(fetch_nxny(rid))
         except Exception as error:
-            failures.append(f"{rid}: {type(error).__name__}")
+            reason = str(error) if isinstance(error, NXNYDownloadError) else type(error).__name__
+            failures.append(f"{rid}: {reason}")
             # An expired browser session should consume at most one attempted download.
             break
     print(f"Latest list candidates={len(reports)}, new attempts={downloaded}, restored={recovered}, pages={pages}")
@@ -369,14 +486,16 @@ def backup(drive, folder):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["fetch","backup"])
-    parser.add_argument("--archive-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--archive-only", action="store_true")
+    mode.add_argument("--drive-only", action="store_true")
     args = parser.parse_args()
-    if args.archive_only and args.action != "fetch":
-        parser.error("--archive-only is only available for fetch")
+    if (args.archive_only or args.drive_only) and args.action != "fetch":
+        parser.error("Archive recovery modes are only available for fetch")
     try:
         drive, folder = drive_service(), env("GDRIVE_FOLDER_ID")
         if args.action == "fetch":
-            sys.exit(fetch(drive, folder, archive_only=args.archive_only))
+            sys.exit(fetch(drive, folder, archive_only=args.archive_only, drive_only=args.drive_only))
         sys.exit(backup(drive, folder))
     except Exception as error:
         # Remote exceptions can contain signed URLs; log class and stage only.
