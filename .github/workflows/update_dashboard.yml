@@ -8,7 +8,7 @@ on:
         options: [manual, cloudflare, benchmark, publish-only, drive-only]
         default: manual
       history_backfill:
-        description: Search the last eight weeks for unpublished reports
+        description: Recover unpublished PDF reports from the last eight weeks
         type: boolean
         default: false
       report_id:
