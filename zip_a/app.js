@@ -460,6 +460,7 @@
 
   // ================= 路由与初始化 =================
   function render() {
+    if (!periods?.[state.week]) return;
     S=periods[state.week];
     TMAP=Object.fromEntries(S.tenors.map(t=>[t.id,t])); VMAP=Object.fromEntries(S.views.map(v=>[v.id,v]));
     if(!S.brokers.some(b=>b.name===state.broker)) state.broker=S.brokers[0]?.name;
