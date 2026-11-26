@@ -30,6 +30,15 @@ _WEEKLY_SERIES = re.compile(
     r"|(?:国债|利率债|利率|债市)(?:策略|研究)?周度"
 )
 _EXCLUDED = ("科创", "信用", "转债", "REIT", "美债", "债券ETF", "债券基金周度", "私募EB")
+_NON_PDF_SUFFIX = re.compile(
+    r"\.(xlsx|xlsm|xlsb|xls|csv|tsv|zip|rar|7z|docx|docm|doc|pptx|ppt|txt|html|htm|xml|json|ods|odt|wps)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def non_pdf_suffix(name):
+    match = _NON_PDF_SUFFIX.search(name)
+    return match[1].lower() if match else None
 
 
 def covered_broker(name):
@@ -39,6 +48,8 @@ def covered_broker(name):
 
 def weekly_broker(title):
     """Return the covered broker for a qualifying listing or archive filename."""
+    if non_pdf_suffix(title):
+        return None
     title = re.sub(r"^\d+-", "", title.strip())
     publisher, separator, subject = title.partition("-")
     if not separator:
@@ -52,7 +63,7 @@ def weekly_broker(title):
     return broker
 
 def manual_identity(filename):
-    if not filename.lower().endswith(".pdf") or any(c in filename for c in "/\\"):
+    if not filename.lower().endswith(".pdf") or non_pdf_suffix(filename) or any(c in filename for c in "/\\"):
         return None
     stem = filename[:-4].strip()
     series = "每周市场策略聚焦"
