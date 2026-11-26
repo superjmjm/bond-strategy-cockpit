@@ -5,7 +5,7 @@ on:
       trigger_source:
         description: Dispatch origin
         type: choice
-        options: [manual, cloudflare, benchmark, publish-only]
+        options: [manual, cloudflare, benchmark, publish-only, drive-only]
         default: manual
       history_backfill:
         description: Search the last eight weeks for unpublished reports
@@ -33,10 +33,12 @@ concurrency:
 jobs:
   update:
     if: >-
-      (vars.ENABLE_REPORT_PIPELINE == 'true' ||
+      (vars.ENABLE_REPORT_PIPELINE == 'true' || inputs.trigger_source == 'drive-only' ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[drive-only-intake]')) ||
       (github.event_name == 'workflow_dispatch' && inputs.trigger_source == 'manual' &&
       inputs.report_id != '' && inputs.reviewed_extraction != '')) &&
-      (github.event_name != 'push' || contains(github.event.head_commit.message, '[backfill-weeklies]')) && github.ref_name == github.event.repository.default_branch &&
+      (github.event_name != 'push' || contains(github.event.head_commit.message, '[backfill-weeklies]') ||
+      contains(github.event.head_commit.message, '[drive-only-intake]')) && github.ref_name == github.event.repository.default_branch &&
       (inputs.reviewed_extraction == '' || (github.event_name == 'workflow_dispatch' &&
       inputs.trigger_source == 'manual' && inputs.report_id != '')) &&
       inputs.trigger_source != 'benchmark' && inputs.trigger_source != 'publish-only' &&
@@ -52,6 +54,7 @@ jobs:
     env:
       BRANCH: ${{ github.event.repository.default_branch }}
       NXNY_REPORT_ID: ${{ inputs.report_id }}
+      DRIVE_ONLY: ${{ inputs.trigger_source == 'drive-only' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[drive-only-intake]')) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,13 +75,14 @@ jobs:
           HAS_REVIEWED_EXTRACTION: ${{ inputs.reviewed_extraction != '' }}
         run: |
           keys=(DRIVE FOLDER)
-          if [[ "$HAS_REVIEWED_EXTRACTION" != "true" ]]; then keys+=(MODEL_KEY BROWSER_KEY PROFILE); fi
+          if [[ "$HAS_REVIEWED_EXTRACTION" != "true" ]]; then keys+=(MODEL_KEY); fi
+          if [[ "$HAS_REVIEWED_EXTRACTION" != "true" && "$DRIVE_ONLY" != "true" ]]; then keys+=(BROWSER_KEY PROFILE); fi
           for key in "${keys[@]}"; do
             if [[ -z "${!key}" ]]; then echo "::error::Missing configuration $key"; exit 1; fi
           done
 
       # Step 1 拉取最新研报。可把此步骤替换为现有采集脚本，PDF 放入 reports_inbox/。
-      - name: Fetch NXNY reports and recover unpublished backups
+      - name: Recover unpublished archives or collect NXNY reports
         id: fetch
         env:
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
@@ -91,14 +95,18 @@ jobs:
         run: |
           rc=0
           args=()
-          if [[ "$HAS_REVIEWED_EXTRACTION" == "true" ]]; then args+=(--archive-only); fi
+          if [[ "$DRIVE_ONLY" == "true" ]]; then
+            args+=(--drive-only)
+          elif [[ "$HAS_REVIEWED_EXTRACTION" == "true" ]]; then
+            args+=(--archive-only)
+          fi
           python scripts/report_io.py fetch "${args[@]}" || rc=$?
           echo "code=$rc" >> "$GITHUB_OUTPUT"
           if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
 
       # Step 2 按文件摘要备份 PDF，回读上传回执的 MD5 后才继续。此处可换为既有备份脚本。
       - name: Back up PDFs to Google Drive
-        if: inputs.reviewed_extraction == ''
+        if: env.DRIVE_ONLY != 'true' && inputs.reviewed_extraction == ''
         env:
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
@@ -119,7 +127,7 @@ jobs:
           echo "code=$rc" >> "$GITHUB_OUTPUT"
           if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
       - name: Continue historical batches after checkpointing verified results
-        if: (inputs.history_backfill || contains(github.event.head_commit.message, '[backfill-weeklies]')) && steps.fetch.outputs.code == '0' && steps.extract.outputs.code == '0'
+        if: env.DRIVE_ONLY != 'true' && (inputs.history_backfill || contains(github.event.head_commit.message, '[backfill-weeklies]')) && steps.fetch.outputs.code == '0' && steps.extract.outputs.code == '0'
         env:
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
@@ -154,6 +162,9 @@ jobs:
           if git diff --quiet -- dashboard_data.json; then echo "No new report data"; exit 0; fi
           git show HEAD:dashboard_data.json > "$RUNNER_TEMP/dashboard-before.json"
           python scripts/verify_selected_report.py --previous "$RUNNER_TEMP/dashboard-before.json"
+      - name: Verify the Drive batch can build the public A snapshot
+        if: env.DRIVE_ONLY == 'true'
+        run: python scripts/build_public.py "$RUNNER_TEMP/drive-proof" --production
       - name: Commit only changed dashboard data
         id: commit
         run: |
