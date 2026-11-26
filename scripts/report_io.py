@@ -21,7 +21,7 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 INBOX = ROOT / "reports_inbox"
-LIST_URL = "https://www.nxny.com/stype_qh/"
+LIST_BASE = "https://www.nxny.com"
 MAX_LIST_PAGES = 30
 MAX_BYTES = 48_000_000
 CN = timezone(timedelta(hours=8))
@@ -99,77 +99,113 @@ def download_cached(drive, row):
     return pdf
 
 
-def parse_listing(body):
+def parse_listing(body, *, ignored=None):
+    """Return only confirmed positive-page PDFs. A valid all-Excel page is empty."""
     items = {}
-    for block in re.findall(r"<li(?:\s[^>]*)?>(.*?)</li>", body, re.S | re.I):
-        match = re.search(r'<a\s[^>]*href="(/report/view_(\d+)\.html)"[^>]*title="([^"]+)"', block)
-        if not match or 'class="rlist"' not in block:
+    found_rows = False
+    for block in re.findall(r"<li\b[^>]*>(.*?)</li>", body, re.S | re.I):
+        if not re.search(r"""class\s*=\s*["'][^"']*\brlist\b""", block, re.I):
             continue
-        title = html.unescape(match[3])
-        # Format labels can be split across adjacent elements on the listing.
-        format_label = declared_report_format(html.unescape(re.sub(r"<[^>]*>", " ", block)))
+        for anchor in re.findall(r"<a\b[^>]*>", block, re.I):
+            link = re.search(r"""href\s*=\s*["']/report/view_(\d+)\.html["']""", anchor, re.I)
+            title_attr = re.search(r"""(?:^|\s)title\s*=\s*(["'])(.*?)\1""", anchor, re.I | re.S)
+            if link and title_attr:
+                break
+        else:
+            continue
+        found_rows = True
+        rid, title = link[1], html.unescape(title_attr[2])
+        labels = html.unescape(re.sub(r"<[^>]*>", " ", block))
+        icon = re.search(r"""<img\b[^>]*\bsrc\s*=\s*["'](?:[^"']*/)?hz/([a-z0-9]+)\.gif["']""", block, re.I)
+        fmt = declared_report_format(labels)
+        extension = non_pdf_suffix(title)
+        if fmt and fmt != "pdf":
+            extension = fmt
+        if icon and icon[1].lower() != "pdf":
+            extension = icon[1].lower()
+        if extension:
+            if ignored is not None and rid not in ignored:
+                ignore_non_pdf(ignored, rid, extension)
+            continue
+        pages = re.search(r"页数\s*[：:]\s*(\d+)", labels)
+        if not icon or not pages or int(pages[1]) < 1:
+            continue
         try:
             day = datetime.strptime(title.rsplit("-", 1)[-1], "%y%m%d").date()
         except ValueError:
             day = None
-        uploaded = re.search(r"上传时间\s*[：:]\s*(\d{8})\b", block)
+        uploaded = re.search(r"上传时间\s*[：:]\s*(\d{8})\b", labels)
         try:
             upload_day = datetime.strptime(uploaded[1], "%Y%m%d").date() if uploaded else None
         except ValueError:
             upload_day = None
-        extension = format_label if format_label and format_label != "pdf" else non_pdf_suffix(title)
-        items[match[2]] = (title, day, upload_day, extension)
-    if not items:
+        items[rid] = (title, day, upload_day, int(pages[1]))
+    if not found_rows:
         raise ValueError("NXNY list unavailable or structure changed")
     return items
 
 
 def scan_listing(today, seen_ids, archived_names, limit, ignored, target="", days=7):
-    """Read public list pages in upload order; never download a PDF here."""
+    """Discover both channels using public listing pages and one shared PDF budget."""
     cutoff = today - timedelta(days=days)
-    reports = []
-    fingerprints = set()
     seen_ids = set(seen_ids)
     max_pages = MAX_LIST_PAGES * ((days + 6) // 7)
-    for page in range(1, max_pages + 1):
-        url = LIST_URL if page == 1 else f"{LIST_URL.rstrip('/')}_p{page}/"
-        try:
-            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=45)
-            response.raise_for_status()
-            body = response.content.decode("utf8")
-            items = parse_listing(body)
-        except (requests.RequestException, ValueError) as error:
-            return reports, page, f"page {page}: {type(error).__name__}"
-        fingerprint = frozenset(items)
-        if fingerprint in fingerprints:
-            return reports, page, f"page {page}: repeated listing"
-        fingerprints.add(fingerprint)
-        for rid, (title, report_day, _, extension) in items.items():
-            if rid in seen_ids or rid in ignored or (target and rid != target):
-                continue
-            if extension:
-                ignore_non_pdf(ignored, rid, extension)
-                continue
-            if not report_day or not cutoff <= report_day <= today or not weekly_broker(title):
-                continue
-            if f"{rid}-{name_for(title)}.pdf" in archived_names:
-                continue
-            reports.append((rid, title))
-            seen_ids.add(rid)
-            if len(reports) == limit:
-                return reports, page, None
-
-        uploads = [upload for _, _, upload, _ in items.values()]
-        if all(upload and upload < cutoff for upload in uploads):
-            return reports, page, None
-        next_pages = {int(n) for n in re.findall(
-            r"""href\s*=\s*["'](?:https://www\.nxny\.com)?/stype_qh_p(\d+)/["']""", body
-        ) if int(n) > page}
-        if not next_pages:
-            return reports, page, None
-        if page + 1 not in next_pages:
-            return reports, page, f"page {page}: next page missing"
-    return reports, max_pages, "list page limit reached before completing discovery"
+    candidates = {"qh": [], "hc": []}
+    issues = []
+    scanned = 0
+    for channel, reports in candidates.items():
+        fingerprints = set()
+        # Leave room for a cross-listed 广发 issue even when the bond queue is full.
+        capacity = limit if channel == "qh" else max(1, limit - len(candidates["qh"]))
+        for page in range(1, max_pages + 1):
+            suffix = "" if page == 1 else f"_p{page}"
+            url = f"{LIST_BASE}/stype_{channel}{suffix}/"
+            scanned += 1
+            try:
+                response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=45)
+                response.raise_for_status()
+                body = response.content.decode("utf8")
+                items = parse_listing(body, ignored=ignored)
+            except (requests.RequestException, ValueError) as error:
+                issues.append(f"{channel} page {page}: {type(error).__name__}")
+                break
+            fingerprint = frozenset(re.findall(r"/report/view_(\d+)\.html", body, re.I))
+            if fingerprint in fingerprints:
+                issues.append(f"{channel} page {page}: repeated listing")
+                break
+            fingerprints.add(fingerprint)
+            for rid, (title, report_day, _, pages) in items.items():
+                if rid in seen_ids or rid in ignored or (target and rid != target):
+                    continue
+                if not report_day or not cutoff <= report_day <= today:
+                    continue
+                if not weekly_broker(title, pages=pages, channel=channel):
+                    continue
+                if f"{rid}-{name_for(title)}.pdf" in archived_names:
+                    continue
+                reports.append((rid, title, pages, channel))
+                seen_ids.add(rid)
+                if len(reports) == capacity:
+                    break
+            if len(reports) == capacity or (target and target in seen_ids):
+                break
+            uploads = [upload for _, _, upload, _ in items.values()]
+            if uploads and all(upload and upload < cutoff for upload in uploads):
+                break
+            next_pages = {int(n) for n in re.findall(
+                rf"""href\s*=\s*["'](?:https://www\.nxny\.com)?/stype_{channel}_p(\d+)/["']""", body
+            ) if int(n) > page}
+            if not next_pages:
+                break
+            if page + 1 not in next_pages:
+                issues.append(f"{channel} page {page}: next page missing")
+                break
+        else:
+            issues.append(f"{channel}: list page limit reached before completing discovery")
+        if target and target in seen_ids:
+            break
+    hc = candidates["hc"]
+    return candidates["qh"][:limit - len(hc)] + hc, scanned, ", ".join(issues) or None
 
 
 def nxny_download_link(hrefs):
@@ -216,7 +252,9 @@ def fetch_nxny(rid):
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(detail, wait_until="domcontentloaded", timeout=45000)
             extension = declared_report_format(page.locator("body").inner_text(timeout=15000))
-            if extension and extension != "pdf":
+            if extension is None:
+                raise NXNYDownloadError("detail_format_missing")
+            if extension != "pdf":
                 raise NonPDFReport(extension)
             page.locator("#loginstr2").filter(has_text="退出登录").wait_for(timeout=15000)
             hrefs = page.locator("a[href]").evaluate_all("els => els.map(a=>a.href)")
@@ -257,9 +295,10 @@ def fetch_nxny(rid):
 
 
 def name_for(title):
+    title = title.translate(str.maketrans({":": "：", "|": "｜"}))
     name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", title).strip(" .")
     if len(name) > 80 and re.search(r"-\d{6}$", name):
-        return name[:73] + name[-7:]
+        return name[:58] + "…" + name[-21:]
     return name[:80]
 
 
@@ -382,6 +421,8 @@ def fetch_drive_only(drive, folder):
 
 def fetch(drive, folder, *, archive_only=False, drive_only=False):
     target = os.environ.get("NXNY_REPORT_ID", "")
+    INBOX.mkdir(exist_ok=True)
+    (INBOX / "listing.json").unlink(missing_ok=True)
     if drive_only:
         if target or archive_only:
             raise ValueError("Drive-only batch cannot be combined with a report ID or archive-only lookup")
@@ -476,7 +517,8 @@ def fetch(drive, folder, *, archive_only=False, drive_only=False):
         if target and not reports and target not in published_ids and target not in ignored:
             failures.append("Selected report is absent from the eligible listing")
     downloaded = 0
-    for rid,title in reports:
+    listing = {}
+    for rid, title, report_pages, channel in reports:
         filename = f"{rid}-{name_for(title)}.pdf"
         if rid in by_id or filename in prior:
             continue
@@ -484,6 +526,7 @@ def fetch(drive, folder, *, archive_only=False, drive_only=False):
             break
         try:
             (INBOX/filename).write_bytes(fetch_nxny(rid))
+            listing[filename] = {"title": title, "pages": report_pages, "channel": channel}
             downloaded += 1
         except NonPDFReport as skipped:
             ignore_non_pdf(ignored, rid, str(skipped))
@@ -495,6 +538,8 @@ def fetch(drive, folder, *, archive_only=False, drive_only=False):
             failures.append(f"{rid}: {reason}")
             # An expired browser session should consume at most one attempted download.
             break
+    if listing:
+        (INBOX / "listing.json").write_text(json.dumps(listing, ensure_ascii=False), encoding="utf8")
     print(f"Latest list candidates={len(reports)}, new attempts={downloaded}, restored={recovered}, pages={pages}")
     if failures:
         print("::warning::Fetch incomplete: "+", ".join(failures))

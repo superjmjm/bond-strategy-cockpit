@@ -11,9 +11,9 @@ from pathlib import Path
 from pypdf import PdfReader
 
 if __package__:
-    from .report_scope import weekly_broker
+    from .report_scope import manual_identity, weekly_broker
 else:
-    from report_scope import weekly_broker
+    from report_scope import manual_identity, weekly_broker
 
 ROOT = Path(__file__).resolve().parents[1]
 TENORS = {"1-3Y", "5-7Y", "10Y", "30Y", "curve"}
@@ -56,7 +56,9 @@ def report_identity(rows, *, require_quote=False):
         raise ValueError("Unexpected source filename")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("Unexpected report SHA-256")
-    broker = weekly_broker(name)
+    match = weekly_broker(name)
+    manual = manual_identity(name) if not match else None
+    broker = match[0] if match else (manual or {}).get("broker")
     if not broker or any(row["broker"] != broker for row in rows):
         raise ValueError("Views disagree with the covered broker")
     if len({(row["date"], row["report_title"]) for row in rows}) != 1:

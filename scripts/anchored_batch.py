@@ -16,19 +16,21 @@ sys.path.insert(0, str(ROOT / "pilot" / "anchored"))
 from reader import open_cache, read_report
 
 
-def identity(filename, history):
+def identity(filename, history, listing=None):
     manual = manual_identity(filename)
     if manual:
         return manual
-    existing = next((r for r in history if r.get("source_file")==filename and not r.get("is_demo")), None)
-    if existing:
-        return dict(broker=existing["broker"], series="周报", title=existing["report_title"], report_date=existing["date"])
-    broker = weekly_broker(filename)
-    match = re.fullmatch(r"(?:\d+-)?[^-]+-(.+)-(\d{6})\.pdf", filename, re.I)
-    if not broker or not match:
-        raise ValueError("Cannot establish report identity from archive filename: " + filename)
+    listing = listing or {}
+    title = listing.get("title", filename)
+    classification = weekly_broker(title, pages=listing.get("pages"), channel=listing.get("channel", "qh"))
+    match = re.fullmatch(r"(?:\d+-)?[^-]+-(.+)-(\d{6})(?:\.pdf)?", title, re.I)
+    if not classification or not match:
+        raise ValueError("Cannot establish eligible weekly series from: " + filename)
+    broker, series = classification
+    existing = next((r for r in history if r.get("source_file") == filename and not r.get("is_demo")), None)
     day = datetime.strptime(match[2], "%y%m%d").date()
-    return dict(broker=broker,series="周报",title=match[1],report_date=day.isoformat())
+    return dict(broker=broker, series=series, title=existing["report_title"] if existing else match[1],
+                report_date=day.isoformat())
 
 
 def public_report(result, filename):
@@ -67,6 +69,8 @@ def main():
     data=json.loads(args.output.read_bytes()) if args.output.exists() else []
     known={r["report_id"] for r in data}
     history=json.loads((ROOT/"dashboard_data.json").read_bytes())["records"]
+    manifest_path = INBOX / "listing.json"
+    listing = json.loads(manifest_path.read_bytes()) if not args.archive_id and manifest_path.exists() else {}
     if args.archive_id:
         drive=drive_service()
         rows=list_pdfs(drive,env("GDRIVE_FOLDER_ID"))
@@ -89,8 +93,10 @@ def main():
                 if rid in known:
                     continue
                 try:
-                    result=read_report(raw,identity(filename,history),cache)
+                    result=read_report(raw,identity(filename, history, listing.get(filename)),cache)
                     report=public_report(result,filename)
+                    if filename in listing:
+                        report["listing_pages"] = listing[filename]["pages"]
                     assert report["report_id"]==rid
                     data.append(report)
                     save(args.output,data)

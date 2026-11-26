@@ -16,10 +16,10 @@ from typing import Literal, TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model, field_validator, model_validator
 
 if __package__:
-    from .report_scope import covered_broker, weekly_broker
+    from .report_scope import covered_broker, manual_identity, weekly_broker
     from .verify_selected_report import citation_spans, normalized
 else:
-    from report_scope import covered_broker, weekly_broker
+    from report_scope import covered_broker, manual_identity, weekly_broker
     from verify_selected_report import citation_spans, normalized
 
 if TYPE_CHECKING:
@@ -364,6 +364,11 @@ def run():
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
             if digest in seen:
                 continue
+            listed = weekly_broker(path.name)
+            manual = manual_identity(path.name) if not listed else None
+            if not (listed or manual):
+                LOG.warning("跳过非白名单周报")
+                continue
             if reviewed is not None:
                 report = reviewed
             else:
@@ -372,8 +377,7 @@ def run():
                     client = OpenAI(timeout=180.0, max_retries=2)
                 report = extract_single_pdf(client, path, os.getenv("OPENAI_MODEL") or "gpt-4.1-mini")
             broker = covered_broker(report.broker)
-            listed_broker = weekly_broker(path.name)
-            if not broker or (listed_broker and listed_broker != broker):
+            if broker != (listed[0] if listed else manual["broker"]):
                 LOG.warning("跳过范围外或署名不一致的研报")
                 continue
             if date.fromisoformat(report.report_date) > now.date():

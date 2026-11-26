@@ -67,9 +67,8 @@ def _mode(vals: list[str]) -> str:
 
 def infer_week_mon(report_date: str) -> str:
     d = date.fromisoformat(report_date)
-    # 周日发布的周报归入次日周一观察周
-    if d.weekday() == 6:
-        return (d + timedelta(days=1)).isoformat()
+    if d.weekday() in (5, 6):
+        return (d + timedelta(days=7 - d.weekday())).isoformat()
     return (d - timedelta(days=d.weekday())).isoformat()
 
 
@@ -86,8 +85,13 @@ def iso_week_meta(mon_str: str, ref_idx: int) -> dict[str, Any]:
     }
 
 
+def view_priority(view):
+    return (view["series"] == "市场策略周报", view["vote_eligible"],
+            view["report_date"], view["report_id"])
+
+
 def validate_and_dedup_views(raw_views: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
-    """校验并按 (broker, report_date, tenor) 去重（后写入覆盖先写入）。"""
+    """每家券商在同一观察周、同一期限只保留一张卡片。"""
     errors: list[str] = []
     dedup: dict[tuple[str, str, str], dict[str, Any]] = {}
 
@@ -145,7 +149,9 @@ def validate_and_dedup_views(raw_views: list[dict[str, Any]]) -> tuple[list[dict
             if type(v.get("vote_eligible")) is not bool:
                 raise ValueError("Missing vote eligibility")
             clean.update(report_id=v["report_id"],vote_eligible=v["vote_eligible"],evidence=v["evidence"],account_note=v["account_note"])
-            dedup[(v["report_id"], tenor)] = clean
+            key = (broker, week_mon, tenor)
+            if key not in dedup or view_priority(clean) > view_priority(dedup[key]):
+                dedup[key] = clean
         except Exception as exc:
             errors.append(f"Row {idx}: {exc}")
 
