@@ -24,7 +24,7 @@ def identity(filename, history):
     if existing:
         return dict(broker=existing["broker"], series="周报", title=existing["report_title"], report_date=existing["date"])
     broker = weekly_broker(filename)
-    match = re.fullmatch(r"\d+-[^-]+-(.+)-(\d{6})\.pdf", filename, re.I)
+    match = re.fullmatch(r"(?:\d+-)?[^-]+-(.+)-(\d{6})\.pdf", filename, re.I)
     if not broker or not match:
         raise ValueError("Cannot establish report identity from archive filename: " + filename)
     day = datetime.strptime(match[2], "%y%m%d").date()
