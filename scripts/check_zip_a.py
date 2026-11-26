@@ -24,8 +24,8 @@ def check(url):
             assert all(v['week_idx']<=i for v in s['views'])
             from datetime import date,timedelta
             assert all(date.fromisoformat(d)<=date.fromisoformat(week['mon'])+timedelta(days=6) for d in s['dates'])
-            rows=page.locator('[data-tenor]')
-            assert rows.count()==6
+            rows=page.locator('tr[data-tenor]')
+            expect(rows).to_have_count(len(s['tenors']))
             rows.first.click()
             for t in s['tenors']:
                 page.locator('button[data-tenor="'+t['id']+'"]').click()
