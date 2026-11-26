@@ -14,9 +14,9 @@ from pathlib import Path
 import requests
 
 if __package__:
-    from .report_scope import weekly_broker
+    from .report_scope import manual_identity, weekly_broker
 else:
-    from report_scope import weekly_broker
+    from report_scope import manual_identity, weekly_broker
 
 ROOT = Path(__file__).resolve().parents[1]
 INBOX = ROOT / "reports_inbox"
@@ -94,13 +94,14 @@ def parse_listing(body):
     return items
 
 
-def scan_listing(today, seen_ids, archived_names, limit, target=""):
+def scan_listing(today, seen_ids, archived_names, limit, target="", days=7):
     """Read public list pages in upload order; never download a PDF here."""
-    cutoff = today - timedelta(days=7)
+    cutoff = today - timedelta(days=days)
     reports = []
     fingerprints = set()
     seen_ids = set(seen_ids)
-    for page in range(1, MAX_LIST_PAGES + 1):
+    max_pages = MAX_LIST_PAGES * ((days + 6) // 7)
+    for page in range(1, max_pages + 1):
         url = LIST_URL if page == 1 else f"{LIST_URL.rstrip('/')}_p{page}/"
         try:
             response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=45)
@@ -135,7 +136,7 @@ def scan_listing(today, seen_ids, archived_names, limit, target=""):
             return reports, page, None
         if page + 1 not in next_pages:
             return reports, page, f"page {page}: next page missing"
-    return reports, MAX_LIST_PAGES, "list page limit reached before completing discovery"
+    return reports, max_pages, "list page limit reached before completing discovery"
 
 
 def fetch_nxny(rid):
@@ -193,6 +194,40 @@ def name_for(title):
     return name[:80]
 
 
+def recover_history(drive, cutoff, today, skip_ids, published, limit):
+    files = drive.files()
+    index = files.list(q="trashed=false and name='研报完整目录.json' and mimeType='application/json'",
+                       fields="files(id),nextPageToken", pageSize=2).execute(num_retries=2)
+    rows = index.get("files", [])
+    if len(rows) != 1 or index.get("nextPageToken"):
+        raise ValueError("Historical Drive catalog missing or ambiguous")
+    catalog = json.loads(files.get_media(fileId=rows[0]["id"]).execute(num_retries=2))
+    count = 0
+    for report in catalog["reports"]:
+        title, rid = report.get("title", ""), str(report.get("report_id") or "")
+        digest = report.get("sha256")
+        if (not rid.isdigit() or rid in skip_ids or digest in published or not weekly_broker(title)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest or "") or not report.get("pdf_id")):
+            continue
+        stamp = re.search(r"-(\d{6})$", title)
+        if not stamp or not cutoff <= datetime.strptime(stamp[1], "%y%m%d").date() <= today:
+            continue
+        row = files.get(fileId=report["pdf_id"], fields="id,size,md5Checksum,trashed",
+                        supportsAllDrives=True).execute(num_retries=2)
+        if row.get("trashed"):
+            continue
+        raw = download_cached(drive, row)
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError("Historical catalog digest mismatch")
+        (INBOX / f"{rid}-{name_for(title)}.pdf").write_bytes(raw)
+        skip_ids.add(rid)
+        published.add(digest)
+        count += 1
+        if count >= limit:
+            break
+    return count
+
+
 def fetch(drive, folder, *, archive_only=False):
     target = os.environ.get("NXNY_REPORT_ID", "")
     if (target or archive_only) and not re.fullmatch(r"[0-9]{1,12}", target):
@@ -200,8 +235,12 @@ def fetch(drive, folder, *, archive_only=False):
     INBOX.mkdir(exist_ok=True)
     records = json.loads((ROOT/"dashboard_data.json").read_text("utf8"))["records"]
     anchored = ROOT/"anchored_reports.json"
-    if anchored.exists():
-        records = records + json.loads(anchored.read_bytes())
+    anchored_rows = json.loads(anchored.read_bytes()) if anchored.exists() else []
+    anchored_hashes = {r["report_id"] for r in anchored_rows}
+    days = int(os.environ.get("REPORT_LOOKBACK_DAYS") or "7")
+    if not 1 <= days <= 56:
+        raise ValueError("REPORT_LOOKBACK_DAYS must be in 1..56")
+    records = anchored_rows if days > 7 else records + anchored_rows
     known = {row.get("report_id") for row in records}
     published_ids = {
         match[1] for row in records if not row.get("is_demo")
@@ -212,17 +251,44 @@ def fetch(drive, folder, *, archive_only=False):
     by_id = {r["appProperties"]["nxny_id"]:r for r in backups if r.get("appProperties",{}).get("nxny_id")}
     if archive_only and target not in by_id:
         raise ValueError("Selected report is absent from the Drive archive")
-    limit = 1 if target else int(os.environ.get("MAX_NEW_PDFS") or "4")
+    limit = 1 if target else int(os.environ.get("MAX_NEW_PDFS") or "15")
     if not 1 <= limit <= 20:
         raise ValueError("MAX_NEW_PDFS must be in 1..20")
     # Resume any backed-up but unpublished reports, even after they have left the listing.
     recovered = 0
     failures = []
     for row in backups:
+        if recovered >= limit and not target:
+            break
         metadata = row.get("appProperties", {})
         if target and metadata.get("nxny_id") != target:
             continue
         digest = metadata.get("sha256")
+        try:
+            manual = manual_identity(row["name"]) if not target else None
+            if manual:
+                if digest in anchored_hashes:
+                    continue
+                raw = download_cached(drive, row)
+                actual = hashlib.sha256(raw).hexdigest()
+                if digest and actual != digest:
+                    raise ValueError("Manual PDF checksum mismatch")
+                drive.files().update(fileId=row["id"], supportsAllDrives=True,
+                    body={"appProperties": {**metadata, "sha256": actual, "source": "manual"}}).execute(num_retries=2)
+                if actual not in anchored_hashes:
+                    path = INBOX / row["name"]
+                    if path.exists() and path.read_bytes() != raw:
+                        raise ValueError("Conflicting manual filenames")
+                    path.write_bytes(raw)
+                    recovered += 1
+                continue
+        except Exception as error:
+            failures.append(f"manual {row['id']}: {type(error).__name__}")
+            continue
+        if days > 7:
+            match = re.search(r"-(\d{6})\.pdf$", row["name"], re.I)
+            if not match or not 0 <= (datetime.now(CN).date() - datetime.strptime(match[1], "%y%m%d").date()).days <= days:
+                continue
         if digest and (digest not in known or (archive_only and target)) and weekly_broker(row["name"]):
             try:
                 raw = download_cached(drive,row)
@@ -235,9 +301,13 @@ def fetch(drive, folder, *, archive_only=False):
                 recovered += 1
             except Exception as error:
                 failures.append(type(error).__name__)
+    skip_ids = published_ids | set(by_id)
+    if days > 7 and not target and recovered < limit:
+        today = datetime.now(CN).date()
+        recovered += recover_history(drive, today - timedelta(days=days), today, skip_ids, set(known), limit - recovered)
     reports, pages = [], 0
-    if not archive_only and (not target or target not in by_id):
-        reports, pages, issue = scan_listing(datetime.now(CN).date(), published_ids | set(by_id), prior, limit, target)
+    if recovered < limit and not archive_only and (not target or target not in by_id):
+        reports, pages, issue = scan_listing(datetime.now(CN).date(), skip_ids, prior, limit - recovered, target, days)
         if issue:
             failures.append("discovery: " + issue)
         if target and not reports and target not in published_ids:

@@ -7,6 +7,10 @@ on:
         type: choice
         options: [manual, cloudflare, benchmark, publish-only]
         default: manual
+      history_backfill:
+        description: Search the last eight weeks for unpublished reports
+        type: boolean
+        default: false
       report_id:
         description: Optional NXNY report ID for single-report validation
         type: string
@@ -32,7 +36,7 @@ jobs:
       (vars.ENABLE_REPORT_PIPELINE == 'true' ||
       (github.event_name == 'workflow_dispatch' && inputs.trigger_source == 'manual' &&
       inputs.report_id != '' && inputs.reviewed_extraction != '')) &&
-      github.event_name != 'push' && github.ref_name == github.event.repository.default_branch &&
+      (github.event_name != 'push' || contains(github.event.head_commit.message, '[backfill-weeklies]')) && github.ref_name == github.event.repository.default_branch &&
       (inputs.reviewed_extraction == '' || (github.event_name == 'workflow_dispatch' &&
       inputs.trigger_source == 'manual' && inputs.report_id != '')) &&
       inputs.trigger_source != 'benchmark' && inputs.trigger_source != 'publish-only' &&
@@ -40,7 +44,7 @@ jobs:
       github.event.schedule != '37 13 * * 1-5')) &&
       (inputs.trigger_source != 'cloudflare' || (vars.SCHEDULER == 'cloudflare' && !inputs.report_id))
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 350
     permissions:
       contents: write
     outputs:
@@ -81,7 +85,8 @@ jobs:
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
           TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
           TINYFISH_PROFILE_ID: ${{ secrets.TINYFISH_PROFILE_ID }}
-          MAX_NEW_PDFS: ${{ vars.MAX_NEW_PDFS || '1' }}
+          REPORT_LOOKBACK_DAYS: ${{ (inputs.history_backfill || contains(github.event.head_commit.message, '[backfill-weeklies]')) && '56' || '7' }}
+          MAX_NEW_PDFS: ${{ vars.MAX_NEW_PDFS || '15' }}
           HAS_REVIEWED_EXTRACTION: ${{ inputs.reviewed_extraction != '' }}
         run: |
           rc=0
@@ -113,6 +118,33 @@ jobs:
           fi
           echo "code=$rc" >> "$GITHUB_OUTPUT"
           if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
+      - name: Continue historical batches after checkpointing verified results
+        if: (inputs.history_backfill || contains(github.event.head_commit.message, '[backfill-weeklies]')) && steps.fetch.outputs.code == '0' && steps.extract.outputs.code == '0'
+        env:
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+          TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
+          TINYFISH_PROFILE_ID: ${{ secrets.TINYFISH_PROFILE_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MAX_NEW_PDFS: '15'
+          REPORT_LOOKBACK_DAYS: '56'
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for batch in {1..5}; do
+            if ! git diff --quiet -- anchored_reports.json; then
+              python scripts/build_public.py "$RUNNER_TEMP/backfill-proof" --production
+              git commit -m 'Backfill verified weekly reports' -- anchored_reports.json
+              git push origin "HEAD:refs/heads/$BRANCH"
+            fi
+            find reports_inbox -maxdepth 1 -type f -name '*.pdf' -delete
+            python scripts/report_io.py fetch
+            if ! compgen -G 'reports_inbox/*.pdf' >/dev/null; then exit 0; fi
+            python scripts/report_io.py backup
+            python scripts/anchored_batch.py
+          done
+          echo "::notice::Batch safety limit reached; check remaining eligible reports."
       - name: Verify the selected report and PDF page references
         if: inputs.reviewed_extraction != ''
         run: python scripts/verify_selected_report.py
@@ -148,7 +180,7 @@ jobs:
   benchmark:
     if: >-
       github.ref_name == github.event.repository.default_branch &&
-      ((github.event_name == 'schedule' && github.event.schedule == '37 13 * * 1-5') ||
+      ((github.event_name == 'schedule' && vars.SCHEDULER != 'cloudflare' && github.event.schedule == '37 13 * * 1-5') ||
       (github.event_name == 'workflow_dispatch' && inputs.trigger_source == 'benchmark'))
     runs-on: ubuntu-latest
     timeout-minutes: 5

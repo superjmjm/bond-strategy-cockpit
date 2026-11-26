@@ -1,5 +1,6 @@
 """Refresh the dashboard's end-of-day ChinaBond Treasury curve from the MOF table."""
 
+import argparse
 import json
 import math
 import os
@@ -9,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 SOURCE_URL = "https://yield.chinabond.com.cn/cbweb-czb-web/czb/moreInfo?locale=cn_ZH&nameType=1"
@@ -124,10 +126,41 @@ def update_data(data, snapshot):
     return True
 
 
+def historical_curves(end, days):
+    start = end - timedelta(days=days - 1)
+    query = urlencode(dict(zblx="yz", gjqx="2,7,10,30", startTime=start, endTime=end,
+                           locale="cn_ZH", qxmc=1))
+    url = SOURCE_URL.split("moreInfo")[0] + "czbQueryYz?" + query
+    with urlopen(Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=60) as response:
+        series = json.load(response)
+    history = {}
+    for line in series:
+        tenor = TENORS[line["ycDefName"]]
+        for stamp, value in line["seriesData"]:
+            day = datetime.fromtimestamp(stamp / 1000, BEIJING).date()
+            if not start <= day <= end or not isinstance(value, (int, float)) or not -100 < value < 100:
+                raise ValueError("Invalid historical curve observation")
+            row = history.setdefault(day.isoformat(), {})
+            if tenor in row:
+                raise ValueError("Duplicate historical observation")
+            row[tenor] = value
+    if not history or any(set(row) != set(TENORS.values()) for row in history.values()):
+        raise ValueError("Incomplete historical curves")
+    if (date.fromisoformat(min(history)) - start).days > 10 or max(history) != end.isoformat():
+        raise ValueError("Historical response does not cover requested period")
+    return history
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--history-days", type=int, choices=range(90, 184), metavar="90..183")
+    args = parser.parse_args()
     snapshot = read_curve()
     data = json.loads(OUTPUT.read_text(encoding="utf-8-sig"))
-    if not update_data(data, snapshot):
+    history = historical_curves(snapshot[0], args.history_days) if args.history_days else {}
+    changed = any(data.get("benchmark_history", {}).get(k) != v for k, v in history.items() if k != snapshot[0].isoformat())
+    data.setdefault("benchmark_history", {}).update({k: v for k, v in history.items() if k != snapshot[0].isoformat()})
+    if not update_data(data, snapshot) and not changed:
         print("Official benchmark unchanged.")
         return
     with NamedTemporaryFile(dir=OUTPUT.parent, mode="w", encoding="utf-8", suffix=".tmp", delete=False) as stream:

@@ -10,13 +10,16 @@ import sys
 import tempfile
 
 from report_io import INBOX, ROOT, download_cached, drive_service, env, list_pdfs
-from report_scope import weekly_broker
+from report_scope import manual_identity, weekly_broker
 
 sys.path.insert(0, str(ROOT / "pilot" / "anchored"))
 from reader import open_cache, read_report
 
 
 def identity(filename, history):
+    manual = manual_identity(filename)
+    if manual:
+        return manual
     existing = next((r for r in history if r.get("source_file")==filename and not r.get("is_demo")), None)
     if existing:
         return dict(broker=existing["broker"], series="周报", title=existing["report_title"], report_date=existing["date"])

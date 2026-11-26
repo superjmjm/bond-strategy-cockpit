@@ -1,13 +1,13 @@
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(dispatch(env, event.scheduledTime));
+    ctx.waitUntil(dispatch(env, event.scheduledTime, event.cron));
   },
   fetch() {
     return new Response("Scheduled dispatcher", { status: 404 });
   }
 };
 
-export async function dispatch(env, scheduledTime) {
+export async function dispatch(env, scheduledTime, cron) {
   if (env.SCHEDULER_ENABLED !== "true") return;
   const { GITHUB_OWNER, GITHUB_REPO, GITHUB_REF, GITHUB_TOKEN } = env;
   if (![GITHUB_OWNER, GITHUB_REPO, GITHUB_REF, GITHUB_TOKEN].every(Boolean)) {
@@ -20,7 +20,7 @@ export async function dispatch(env, scheduledTime) {
     headers: { Authorization: "Bearer " + GITHUB_TOKEN, Accept: "application/vnd.github+json",
                "Content-Type": "application/json", "User-Agent": "rates-cockpit-scheduler",
                "X-GitHub-Api-Version": "2022-11-28" },
-    body: JSON.stringify({ ref: GITHUB_REF, inputs: { trigger_source: "cloudflare" } })
+    body: JSON.stringify({ ref: GITHUB_REF, inputs: { trigger_source: cron === "37 13 * * 1-5" ? "benchmark" : "cloudflare" } })
   });
   if (!response.ok) throw new Error("Workflow dispatch HTTP " + response.status);
   console.log(JSON.stringify({ event: "dispatch_accepted", scheduledTime, status: response.status,

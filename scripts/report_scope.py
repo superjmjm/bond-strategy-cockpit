@@ -1,13 +1,18 @@
 """Limit report intake to the cockpit's covered weekly research series."""
 
+from datetime import datetime
 import re
 
 BROKERS = (
     "华泰证券", "华西证券", "申万宏源证券", "浙商证券",
-    "兴业证券", "华创证券", "天风证券",
+    "兴业证券", "华创证券", "天风证券", "财通证券", "国金证券", "招商证券", "国泰海通证券", "广发证券",
 )
 
+MANUAL_BROKER = "中信证券"
 _ALIASES = {
+    "财通": "财通证券", "国金": "国金证券", "招商": "招商证券", "广发": "广发证券",
+    **dict.fromkeys(("国泰海通", "国泰君安", "国泰君安证券", "海通", "海通证券"), "国泰海通证券"),
+    "中信": MANUAL_BROKER, MANUAL_BROKER: MANUAL_BROKER,
     "华泰": "华泰证券",
     "华西": "华西证券",
     "申万宏源": "申万宏源证券",
@@ -39,9 +44,23 @@ def weekly_broker(title):
     if not separator:
         return None
     broker = covered_broker(publisher)
-    if not broker or not _WEEKLY_SERIES.search(subject):
+    if broker not in BROKERS or not _WEEKLY_SERIES.search(subject):
         return None
     search_subject = re.sub(r"\s+", "", subject).upper()
     if any(term in search_subject for term in _EXCLUDED):
         return None
     return broker
+
+def manual_identity(filename):
+    if not filename.lower().endswith(".pdf") or any(c in filename for c in "/\\"):
+        return None
+    publisher, _, subject = filename[:-4].partition("-")
+    if covered_broker(publisher) != MANUAL_BROKER:
+        return None
+    for pattern in (r"(?P<day>\d{8}|\d{6})-(?P<title>.+)", r"(?P<title>.+)-(?P<day>\d{8}|\d{6})"):
+        match = re.fullmatch(pattern, subject)
+        if match:
+            stamp = match["day"]
+            day = datetime.strptime(stamp, "%Y%m%d" if len(stamp) == 8 else "%y%m%d").date()
+            return dict(broker=MANUAL_BROKER, series="周报", title=match["title"], report_date=day.isoformat())
+    return None
