@@ -34,11 +34,11 @@ jobs:
   update:
     if: >-
       (vars.ENABLE_REPORT_PIPELINE == 'true' || inputs.trigger_source == 'drive-only' ||
-      (github.event_name == 'push' && contains(github.event.head_commit.message, '[drive-only-intake]')) ||
+      (github.event_name == 'push' && (contains(github.event.head_commit.message, '[drive-only-intake]') || contains(github.event.head_commit.message, '[citics-drive-intake]'))) ||
       (github.event_name == 'workflow_dispatch' && inputs.trigger_source == 'manual' &&
       inputs.report_id != '' && inputs.reviewed_extraction != '')) &&
       (github.event_name != 'push' || contains(github.event.head_commit.message, '[backfill-weeklies]') ||
-      contains(github.event.head_commit.message, '[drive-only-intake]')) && github.ref_name == github.event.repository.default_branch &&
+      (contains(github.event.head_commit.message, '[drive-only-intake]') || contains(github.event.head_commit.message, '[citics-drive-intake]'))) && github.ref_name == github.event.repository.default_branch &&
       (inputs.reviewed_extraction == '' || (github.event_name == 'workflow_dispatch' &&
       inputs.trigger_source == 'manual' && inputs.report_id != '')) &&
       inputs.trigger_source != 'benchmark' && inputs.trigger_source != 'publish-only' &&
@@ -54,7 +54,8 @@ jobs:
     env:
       BRANCH: ${{ github.event.repository.default_branch }}
       NXNY_REPORT_ID: ${{ inputs.report_id }}
-      DRIVE_ONLY: ${{ inputs.trigger_source == 'drive-only' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[drive-only-intake]')) }}
+      CITICS_DRIVE_INTAKE: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[citics-drive-intake]') }}
+      DRIVE_ONLY: ${{ inputs.trigger_source == 'drive-only' || (github.event_name == 'push' && (contains(github.event.head_commit.message, '[drive-only-intake]') || contains(github.event.head_commit.message, '[citics-drive-intake]'))) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,7 +101,11 @@ jobs:
           elif [[ "$HAS_REVIEWED_EXTRACTION" == "true" ]]; then
             args+=(--archive-only)
           fi
-          python scripts/report_io.py fetch "${args[@]}" || rc=$?
+          if [[ "$CITICS_DRIVE_INTAKE" == "true" ]]; then
+            python scripts/stage_citics_drive.py || rc=$?
+          else
+            python scripts/report_io.py fetch "${args[@]}" || rc=$?
+          fi
           echo "code=$rc" >> "$GITHUB_OUTPUT"
           if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
 
