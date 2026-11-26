@@ -54,7 +54,13 @@ def weekly_broker(title):
 def manual_identity(filename):
     if not filename.lower().endswith(".pdf") or any(c in filename for c in "/\\"):
         return None
-    publisher, _, subject = filename[:-4].partition("-")
+    stem = filename[:-4].strip()
+    series = "每周市场策略聚焦"
+    native = re.fullmatch(r"每周市场策略聚焦\s*(\d{8})\s*[-‐‑‒–—―－:：]+\s*(.+)", stem)
+    if native and native[2].strip():
+        day = datetime.strptime(native[1], "%Y%m%d").date()
+        return dict(broker=MANUAL_BROKER, series=series, title=native[2].strip(), report_date=day.isoformat())
+    publisher, _, subject = stem.partition("-")
     if covered_broker(publisher) != MANUAL_BROKER:
         return None
     for pattern in (r"(?P<day>\d{8}|\d{6})-(?P<title>.+)", r"(?P<title>.+)-(?P<day>\d{8}|\d{6})"):
