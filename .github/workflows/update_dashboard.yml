@@ -119,6 +119,7 @@ jobs:
           echo "code=$rc" >> "$GITHUB_OUTPUT"
           if [[ $rc != 0 && $rc != 2 ]]; then exit "$rc"; fi
       - name: Continue historical batches after checkpointing verified results
+        id: history
         if: (inputs.history_backfill || contains(github.event.head_commit.message, '[backfill-weeklies]')) && steps.fetch.outputs.code == '0' && steps.extract.outputs.code == '0'
         env:
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
@@ -139,10 +140,21 @@ jobs:
               git push origin "HEAD:refs/heads/$BRANCH"
             fi
             find reports_inbox -maxdepth 1 -type f -name '*.pdf' -delete
-            python scripts/report_io.py fetch
-            if ! compgen -G 'reports_inbox/*.pdf' >/dev/null; then exit 0; fi
-            python scripts/report_io.py backup
-            python scripts/anchored_batch.py
+            fetch_rc=0
+            extract_rc=0
+            python scripts/report_io.py fetch || fetch_rc=$?
+            if [[ $fetch_rc != 0 && $fetch_rc != 2 ]]; then exit "$fetch_rc"; fi
+            if compgen -G 'reports_inbox/*.pdf' >/dev/null; then
+              python scripts/report_io.py backup
+              python scripts/anchored_batch.py || extract_rc=$?
+              if [[ $extract_rc != 0 && $extract_rc != 2 ]]; then exit "$extract_rc"; fi
+            elif [[ $fetch_rc == 0 ]]; then
+              exit 0
+            fi
+            if [[ $fetch_rc == 2 || $extract_rc == 2 ]]; then
+              echo "partial=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           done
           echo "::notice::Batch safety limit reached; check remaining eligible reports."
       - name: Verify the selected report and PDF page references
@@ -172,7 +184,7 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
           echo "changed=true" >> "$GITHUB_OUTPUT"
       - name: Report incomplete batch after publishing successes
-        if: steps.fetch.outputs.code == '2' || steps.extract.outputs.code == '2'
+        if: steps.fetch.outputs.code == '2' || steps.extract.outputs.code == '2' || steps.history.outputs.partial == 'true'
         run: |
           echo "::error::Partial batch. Successful records are committed. Failed PDFs can be retried."
           exit 1
