@@ -24,7 +24,7 @@ on:
     - cron: '17 0 * * *' # 北京时间 08:17
     - cron: '17 4 * * *' # 北京时间 12:17
     - cron: '17 9 * * *' # 北京时间 17:17
-    - cron: '37 13 * * 1-5' # 工作日北京时间 21:37，国债曲线
+    - cron: '37 13 * * *' # 每日北京时间 21:37，国债曲线
 permissions: {}
 concurrency:
   group: bond-cockpit-update
@@ -43,7 +43,7 @@ jobs:
       inputs.trigger_source == 'manual' && inputs.report_id != '')) &&
       inputs.trigger_source != 'benchmark' && inputs.trigger_source != 'publish-only' &&
       (github.event_name != 'schedule' || (vars.SCHEDULER == 'github' &&
-      github.event.schedule != '37 13 * * 1-5')) &&
+      github.event.schedule != '37 13 * * *')) &&
       (inputs.trigger_source != 'cloudflare' || (vars.SCHEDULER == 'cloudflare' && !inputs.report_id))
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -212,7 +212,7 @@ jobs:
   benchmark:
     if: >-
       github.ref_name == github.event.repository.default_branch &&
-      ((github.event_name == 'schedule' && vars.SCHEDULER != 'cloudflare' && github.event.schedule == '37 13 * * 1-5') ||
+      ((github.event_name == 'schedule' && vars.SCHEDULER != 'cloudflare' && github.event.schedule == '37 13 * * *') ||
       (github.event_name == 'workflow_dispatch' && inputs.trigger_source == 'benchmark'))
     runs-on: ubuntu-latest
     timeout-minutes: 5

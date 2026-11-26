@@ -4,10 +4,13 @@ compatibility_date = "2026-01-01"
 workers_dev = false
 
 [triggers]
-crons = ["17 0 * * *", "17 4 * * *", "17 9 * * *", "37 13 * * 1-5"]
+crons = ["17 0 * * *", "17 4 * * *", "17 9 * * *", "37 13 * * *"]
 
 [vars]
 GITHUB_OWNER = "superjmjm"
 GITHUB_REPO = "bond-strategy-cockpit"
 GITHUB_REF = "main"
 SCHEDULER_ENABLED = "true"
+
+[observability.logs]
+enabled = true
