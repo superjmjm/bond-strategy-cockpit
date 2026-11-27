@@ -20,7 +20,9 @@ class ArchivePreflight(TestCase):
         drive = Mock()
         drive.files().get().execute.side_effect = HttpError(Response({"status": "404"}), b"{}")
         def scan(channel, start, end, brokers, ignored, rows, hits, skipped):
-            rows["123"] = ("浙商证券", name, 12, channel)
+            if channel == "qh":
+                rows["123"] = ("浙商证券", name, 12, channel)
+                rows["456"] = ("浙商证券", name.replace("123-", "456-"), 12, channel)
             return 1
         env = dict(START_DATE="2026-10-26", END_DATE="2026-11-08", BROKERS="浙商证券",
                    MAX_DOWNLOADS="10", DRY_RUN="true")

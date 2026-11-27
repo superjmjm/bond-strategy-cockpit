@@ -13,7 +13,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import report_io as io
-from report_scope import BROKERS, covered_broker, weekly_broker
+from report_scope import BROKERS, covered_broker, published_issues, weekly_broker, weekly_issue
 
 STATE = Path(os.environ.get("RUNNER_TEMP", ".")) / "range-inventory.json"
 
@@ -128,6 +128,7 @@ def run():
     for r in initial:
         if r["broker"] in brokers and start.isoformat() <= r["report_date"] <= end.isoformat():
             before[r["broker"]].append(r["report_id"])
+    known_issues = published_issues(initial)
     archives = {}
     archive_counts = defaultdict(list)
     inaccessible = defaultdict(list)
@@ -138,7 +139,8 @@ def run():
         if not stamp or not broker or broker[0] not in brokers:
             continue
         day = datetime.strptime(stamp[1], "%y%m%d").date()
-        if not start <= day <= end or rid in ids or digest in digests or name in names:
+        issue_key = (*broker, day.isoformat())
+        if not start <= day <= end or rid in ids or digest in digests or name in names or issue_key in known_issues:
             continue
         if "/" in name or "\\" in name:
             raise ValueError("Unsafe archive filename")
@@ -151,6 +153,7 @@ def run():
         if not meta or meta.get("trashed") or not meta.get("md5Checksum") or not 0 < int(meta.get("size", 0)) < io.MAX_BYTES:
             inaccessible[broker[0]].append(name)
             continue
+        known_issues.add(issue_key)
         archives[file_id] = (name, digest, meta)
         archive_counts[broker[0]].append(name)
         names.add(name)
@@ -161,7 +164,16 @@ def run():
     rows, hits, skipped = {}, defaultdict(set), defaultdict(set)
     ignored = json.loads((io.ROOT / "ignored_nxny_ids.json").read_bytes())
     pages = {ch: scan_channel(ch, start, end, brokers, ignored, rows, hits, skipped) for ch in ("qh", "hc")}
-    candidates = {rid: row for rid, row in rows.items() if rid not in ids and f"{rid}-{io.name_for(row[1])}.pdf" not in names}
+    candidates = {}
+    for rid, row in rows.items():
+        broker, title, page_count, channel = row
+        if rid in ids or f"{rid}-{io.name_for(title)}.pdf" in names:
+            continue
+        key = weekly_issue(title, pages=page_count, channel=channel)
+        if not key or key in known_issues:
+            continue
+        known_issues.add(key)
+        candidates[rid] = row
     state = dict(before=before, archive=archive_counts, inaccessible=inaccessible, candidates={b: [rid for rid, row in candidates.items() if row[0] == b] for b in brokers},
                  hits={b: sorted(hits[b]) for b in brokers}, skipped={b: sorted(skipped[b]) for b in brokers}, pages=pages)
     def checkpoint():

@@ -15,9 +15,9 @@ from pathlib import Path
 import requests
 
 if __package__:
-    from .report_scope import manual_identity, non_pdf_suffix, weekly_broker
+    from .report_scope import manual_identity, non_pdf_suffix, published_issues, weekly_broker, weekly_issue
 else:
-    from report_scope import manual_identity, non_pdf_suffix, weekly_broker
+    from report_scope import manual_identity, non_pdf_suffix, published_issues, weekly_broker, weekly_issue
 
 ROOT = Path(__file__).resolve().parents[1]
 INBOX = ROOT / "reports_inbox"
@@ -147,10 +147,11 @@ def parse_listing(body, *, ignored=None, observe=None):
     return items
 
 
-def scan_listing(today, seen_ids, archived_names, limit, ignored, target="", days=7):
+def scan_listing(today, seen_ids, archived_names, limit, ignored, target="", days=7, known_issues=()):
     """Discover both channels using public listing pages and one shared PDF budget."""
     cutoff = today - timedelta(days=days)
     seen_ids = set(seen_ids)
+    queued_issues = set(known_issues)
     max_pages = MAX_LIST_PAGES * ((days + 6) // 7)
     candidates = {"qh": [], "hc": []}
     issues = []
@@ -181,10 +182,12 @@ def scan_listing(today, seen_ids, archived_names, limit, ignored, target="", day
                     continue
                 if not report_day or not cutoff <= report_day <= today:
                     continue
-                if not weekly_broker(title, pages=pages, channel=channel):
+                issue_key = weekly_issue(title, pages=pages, channel=channel)
+                if not issue_key or issue_key in queued_issues:
                     continue
                 if f"{rid}-{name_for(title)}.pdf" in archived_names:
                     continue
+                queued_issues.add(issue_key)
                 reports.append((rid, title, pages, channel))
                 seen_ids.add(rid)
                 if len(reports) == capacity:
@@ -516,7 +519,10 @@ def fetch(drive, folder, *, archive_only=False, drive_only=False):
     reports, pages = [], 0
     if recovered < limit and not archive_only and (not target or target not in by_id):
         previous_ignored_count = len(ignored)
-        reports, pages, issue = scan_listing(datetime.now(CN).date(), skip_ids, prior, limit - recovered, ignored, target, days)
+        keys = published_issues(anchored_rows)
+        keys.update(weekly_issue(path.name) for path in INBOX.glob("*.pdf"))
+        reports, pages, issue = scan_listing(datetime.now(CN).date(), skip_ids, prior, limit - recovered,
+                                             ignored, target, days, known_issues=keys)
         if len(ignored) != previous_ignored_count:
             save_ignored_ids(ignored)
         if issue:

@@ -108,6 +108,14 @@ class Listing(TestCase):
         with self.assertRaises(ValueError):
             parse_listing("<html>Login</html>")
 
+    def test_skip_published_and_queued_issue_before_budget(self):
+        other_day = GOLD.replace("261115", "261116")
+        body = row("11", GOLD, 18) + row("22", other_day, 20) + row("33", other_day, 20)
+        with patch("report_io.requests.get", return_value=Mock(content=body.encode())):
+            reports, _, _ = scan_listing(date(2026, 11, 17), set(), {}, 15, {},
+                known_issues={("国金证券", "固定收益策略报告", "2026-11-15")})
+        self.assertEqual([r[0] for r in reports], ["22"])
+
     def test_scan_both_channels_even_when_bond_limit_is_full(self):
         base = "https://www.nxny.com/stype_"
         pages = {
