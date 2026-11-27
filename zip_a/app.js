@@ -46,7 +46,7 @@
     if (v.delta === '维持') return `<span class="db k">维持${gap}</span>`;
     return '<span class="db n">新覆盖</span>';
   };
-  const driverChip = dr => `<span class="chip ${dr.impact === '利多' ? 'p' : dr.impact === '利空' ? 'm' : ''}" title="${dr.layer} · ${dr.impact}">${dr.phrase}</span>`;
+  const driverChip = (dr, showLayer = false) => `<span class="chip ${dr.impact === '利多' ? 'p' : dr.impact === '利空' ? 'm' : ''}" title="${dr.layer} · ${dr.impact}">${showLayer === true ? `[${dr.layer}] ` : ''}${dr.phrase}</span>`;
   const lvl = (x, a, b, labs) =>
     x == null ? '<span class="lv na">样本不足</span>' :
     x < a ? `<span class="lv lo">${labs[0]}</span>` :
@@ -218,9 +218,9 @@
       <td>${lvl(m.disp, .6, 1, ['低', '中', '高'])}</td>
       <td title="共识方向与近4周行情同向程度">${lvl(m.trend_align == null ? null : Math.max(0, m.trend_align), .5, 1, ['正常', '偏高', '高度顺势'])}</td>
       <td>${m.act}</td>
-      <td>${m.top_phrases.map(p => `<span class="chip">${p}</span>`).join('')}</td>
+      <td class="driver-col">${m.top_phrases.map(p => `<span class="chip">${p}</span>`).join('')}</td>
     </tr>`).join('');
-    return `<div class="tbl-wrap"><table class="mx"><thead><tr><th>期限桶</th><th>当前 / 周变动</th><th>共识分</th><th>多 / 中 / 空</th><th>较上周</th><th>近8周共识</th><th>目标中位 / 覆盖</th><th>分歧度</th><th>顺势程度</th><th>主流操作</th><th>高频主线</th></tr></thead><tbody>${html}</tbody></table></div>`;
+    return `<div class="tbl-wrap"><table class="mx"><thead><tr><th>期限桶</th><th>当前 / 周变动</th><th>共识分</th><th>多 / 中 / 空</th><th>较上周</th><th>近8周共识</th><th>目标中位 / 覆盖</th><th>分歧度</th><th>顺势程度</th><th>主流操作</th><th class="driver-col">高频主线</th></tr></thead><tbody>${html}</tbody></table></div>`;
   }
 
   function renderChanges(ids, extra) {
@@ -233,7 +233,7 @@
 
   function renderDivergences(list) {
     if (!list.length) return '<div class="empty">本周各期限样本不足或无显著分歧</div>';
-    const side = (v, tp, cls) => `<div class="side ${cls}" data-vid="${v.id}"><b>${v.broker}</b>（${v.raw_tenor}） · <span style="color:${dirColor(v.direction)}">${dirLabel(v.direction, tp)}</span><br>目标 ${tgtTxt(v)} · ${v.action}<br>${v.drivers.map(driverChip).join('')}</div>`;
+    const side = (v, tp, cls) => `<div class="side ${cls}" data-vid="${v.id}"><b>${v.broker}</b>（${v.raw_tenor}） · <span style="color:${dirColor(v.direction)}">${dirLabel(v.direction, tp)}</span><br>目标 ${tgtTxt(v)} · ${v.action}<br>${v.drivers.map(dr => driverChip(dr)).join('')}</div>`;
     return list.map(m => `<div class="dv">
       <div class="dvh"><b data-tenor="${m.tenor}" style="cursor:pointer">${m.tenor} ›</b><span class="lv hi">分歧度 ${m.disp.toFixed(2)}</span><small>${m.bull}多 / ${m.neu}中 / ${m.bear}空</small></div>
       <div class="dvb">${side(VMAP[m.hi_id], m.type, 'bu')}<div class="vs">VS</div>${side(VMAP[m.lo_id], m.type, 'be')}</div>
@@ -279,8 +279,12 @@
       <div class="card"><h3>各家最新观点（${wk.title}）<span class="hint">近4周内有效观点 · 点击卡片查看完整逻辑、原文摘录与原 PDF</span></h3>
         <div class="vcards">${latest.filter(v=>!state.tenorBroker||v.broker===state.tenorBroker).map(v => `<div class="vc" data-vid="${v.id}" style="border-left-color:${dirColor(v.direction)}">
           <div class="vch"><b>${v.broker}</b><span class="badge" style="background:${dirColor(v.direction)}">${dirLabel(v.direction, t.type)}</span>${deltaBadge(v)}${v.week_idx < state.week ? `<span class="stale">${state.week - v.week_idx}周前</span>` : ''}</div>
-          <div class="vcm"><span>原文 <b>${v.raw_tenor}</b></span><span>目标 <b>${tgtTxt(v)}</b></span><span>操作 <b>${v.action}</b></span></div>
-          <div>${v.drivers.map(driverChip).join('')}</div><div class="vcl">${v.logic}</div></div>`).join('') || '<div class="empty">近4周无券商覆盖该期限</div>'}</div>
+          <dl class="vcm">
+            <div class="vc-context"><dt>原文</dt><dd>${v.raw_tenor}</dd><dt>窗口</dt><dd>${v.horizon || '—'}</dd></div>
+            <div><dt>目标</dt><dd>${tgtTxt(v)}</dd></div>
+            <div><dt>操作</dt><dd>${v.action || '—'}</dd></div>
+          </dl>
+          <div class="vc-drivers">${v.drivers.map(dr => driverChip(dr, true)).join('')}</div><div class="vcl">${v.logic}</div></div>`).join('') || '<div class="empty">近4周无券商覆盖该期限</div>'}</div>
       </div>`;
 
     // 1) 收益率走势 × 卖方目标
@@ -397,10 +401,10 @@
         <div class="card"><h3>期限桶 × 周 立场热力图<span class="hint">点击格子查看当期观点与原文</span></h3><div id="c-bh" class="chart" style="height:320px"></div></div>
         <div class="card"><h3>券商风格地图（立场倾向 × 观点切换频率）<span class="hint">右上 = 偏多且调整积极；点击气泡切换券商</span></h3><div id="c-bs" class="chart" style="height:320px"></div></div>
       </div>
-      <div class="card"><h3>各期限桶最新观点（截至 ${wk.title}）</h3><div class="tbl-wrap"><table class="click"><thead><tr><th>期限桶</th><th>原文品种</th><th>日期</th><th>观点</th><th>变化</th><th>目标</th><th>窗口</th><th>操作</th><th>核心主线</th></tr></thead><tbody>
+      <div class="card"><h3>各期限桶最新观点（截至 ${wk.title}）</h3><div class="tbl-wrap"><table class="click"><thead><tr><th>期限桶</th><th>原文品种</th><th>日期</th><th>观点</th><th>变化</th><th>目标</th><th>窗口</th><th>操作</th><th class="driver-col">核心主线</th></tr></thead><tbody>
         ${latest.map(v => {
           const tp = (TMAP[v.tenor] || {}).type;
-          return `<tr data-vid="${v.id}"><td><b>${v.tenor}</b></td><td>${v.raw_tenor}</td><td>${v.report_date}</td><td><span class="badge" style="background:${dirColor(v.direction)}">${dirLabel(v.direction, tp)}</span></td><td>${deltaBadge(v)}</td><td>${tgtTxt(v)}</td><td>${v.horizon}</td><td>${v.action}</td><td>${v.drivers.map(driverChip).join('')}</td></tr>`;
+          return `<tr data-vid="${v.id}"><td><b>${v.tenor}</b></td><td>${v.raw_tenor}</td><td>${v.report_date}</td><td><span class="badge" style="background:${dirColor(v.direction)}">${dirLabel(v.direction, tp)}</span></td><td>${deltaBadge(v)}</td><td>${tgtTxt(v)}</td><td>${v.horizon}</td><td>${v.action}</td><td class="driver-col">${v.drivers.map(dr => driverChip(dr)).join('')}</td></tr>`;
         }).join('')}</tbody></table></div></div>`;
 
     // 1) 立场热力图
@@ -450,9 +454,9 @@
       <div class="sec">成立条件与风险</div><div>${v.cond || '—'}${v.risk ? ` · 主要风险：${v.risk}` : ''}</div>
       <div class="sec">原文摘录</div>${v.account_note ? `<p>适用账户 · ${v.account_note}</p>` : ""}${v.evidence.map(e=>`<blockquote>${e.text}<br><small>物理页 ${e.page} · ${e.pid}</small></blockquote>`).join("")}
       <div class="sec">该券商在 ${v.tenor} 上的历史轨迹</div>
-      <table><thead><tr><th>日期</th><th>原文品种</th><th>观点</th><th>目标</th><th>操作</th><th>主线</th></tr></thead><tbody>
+      <div class="tbl-wrap"><table><thead><tr><th>日期</th><th>原文品种</th><th>观点</th><th>目标</th><th>操作</th><th>主线</th></tr></thead><tbody>
         ${hist.map(h => `<tr style="${h.id === v.id ? 'background:#fff4e6' : ''}"><td>${h.report_date}</td><td>${h.raw_tenor}</td><td><span style="color:${dirColor(h.direction)};font-weight:600">${dirLabel(h.direction, t.type)}</span></td><td>${tgtTxt(h)}</td><td>${h.action}</td><td>${h.drivers.map(d => d.phrase).join('、')}</td></tr>`).join('')}
-      </tbody></table>`;
+      </tbody></table></div>`;
     $('#modal').classList.remove('hidden');
   }
   $('#modal').addEventListener('click', e => { if (e.target.id === 'modal' || e.target.classList.contains('mclose')) $('#modal').classList.add('hidden'); });
