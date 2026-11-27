@@ -107,6 +107,8 @@ def scan_channel(channel, start, end, brokers, ignored, rows, hits, skipped):
 
 
 def run():
+    from googleapiclient.errors import HttpError
+
     start, end, brokers, limit = parameters()
     dry = os.environ["DRY_RUN"].lower() == "true"
     initial = published()
@@ -119,6 +121,7 @@ def run():
             before[r["broker"]].append(r["report_id"])
     archives = {}
     archive_counts = defaultdict(list)
+    inaccessible = defaultdict(list)
     drive = io.drive_service()
     for name, rid, digest, file_id in archive_rows(drive):
         stamp = re.search(r"-(\d{6})\.pdf$", name, re.I)
@@ -130,7 +133,16 @@ def run():
             continue
         if "/" in name or "\\" in name:
             raise ValueError("Unsafe archive filename")
-        archives[file_id] = (name, digest, broker[0])
+        try:
+            meta = drive.files().get(fileId=file_id, fields="id,size,md5Checksum,trashed", supportsAllDrives=True).execute(num_retries=2)
+        except HttpError as exc:
+            if exc.resp.status != 404:
+                raise
+            meta = None
+        if not meta or meta.get("trashed") or not meta.get("md5Checksum") or not 0 < int(meta.get("size", 0)) < io.MAX_BYTES:
+            inaccessible[broker[0]].append(name)
+            continue
+        archives[file_id] = (name, digest, meta)
         archive_counts[broker[0]].append(name)
         names.add(name)
         if rid:
@@ -141,7 +153,7 @@ def run():
     ignored = json.loads((io.ROOT / "ignored_nxny_ids.json").read_bytes())
     pages = {ch: scan_channel(ch, start, end, brokers, ignored, rows, hits, skipped) for ch in ("qh", "hc")}
     candidates = {rid: row for rid, row in rows.items() if rid not in ids and f"{rid}-{io.name_for(row[1])}.pdf" not in names}
-    state = dict(before=before, archive=archive_counts, candidates={b: [rid for rid, row in candidates.items() if row[0] == b] for b in brokers},
+    state = dict(before=before, archive=archive_counts, inaccessible=inaccessible, candidates={b: [rid for rid, row in candidates.items() if row[0] == b] for b in brokers},
                  hits={b: sorted(hits[b]) for b in brokers}, skipped={b: sorted(skipped[b]) for b in brokers}, pages=pages)
     def checkpoint():
         STATE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf8")
@@ -149,8 +161,7 @@ def run():
     if dry:
         return
     io.INBOX.mkdir(exist_ok=True)
-    for file_id, (name, digest, _) in archives.items():
-        meta = drive.files().get(fileId=file_id, fields="id,size,md5Checksum", supportsAllDrives=True).execute(num_retries=2)
+    for name, digest, meta in archives.values():
         raw = io.download_cached(drive, meta)
         if digest and hashlib.sha256(raw).hexdigest() != digest:
             raise ValueError("Archive digest mismatch")
@@ -167,7 +178,8 @@ def run():
             checkpoint()
             continue
         except Exception as exc:
-            print(f"::warning::Download incomplete for {rid}: {type(exc).__name__}")
+            reason = str(exc) if isinstance(exc, io.NXNYDownloadError) else type(exc).__name__
+            print(f"::warning::Download incomplete for {rid}: {reason}")
             partial = True
             break
         io.save_recovered(name, raw)
@@ -195,6 +207,8 @@ def summary():
             old = s["before"].get(b, [])
             new = sum(r["broker"] == b and start.isoformat() <= r["report_date"] <= end.isoformat() and r["report_id"] not in old for r in records)
             lines.append(f"|{b}|{len(old)}|{new}|{len(s['archive'].get(b, []))}|{len(s['candidates'][b])}|{len(s['skipped'][b])}|{'是' if not s['hits'][b] else '—'}|")
+        for b, names in s.get("inaccessible", {}).items():
+            lines.append(f"\n{b}有 {len(names)} 个归档目录条目无法读取，未计入 Drive 待恢复。")
     result = "\n".join(lines)
     print(result)
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf8") as out:
