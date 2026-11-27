@@ -112,3 +112,18 @@ def manual_identity(filename):
             day = datetime.strptime(stamp, "%Y%m%d" if len(stamp) == 8 else "%y%m%d").date()
             return dict(broker=MANUAL_BROKER, series="周报", title=match["title"], report_date=day.isoformat())
     return None
+
+def published_issues(records):
+    return {(covered_broker(r.get("broker", "")), r["series"], r["report_date"])
+            for r in records if r.get("series") and r.get("report_date") and not r.get("is_demo")}
+
+
+def weekly_issue(title, *, pages=None, channel="qh"):
+    classification = weekly_broker(title, pages=pages, channel=channel)
+    stamp = re.search(r"-(\d{6})(?:\.pdf)?$", title, re.I)
+    if classification and stamp:
+        try:
+            return (*classification, datetime.strptime(stamp[1], "%y%m%d").date().isoformat())
+        except ValueError:
+            pass
+    return None
