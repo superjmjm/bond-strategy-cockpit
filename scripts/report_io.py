@@ -99,7 +99,7 @@ def download_cached(drive, row):
     return pdf
 
 
-def parse_listing(body, *, ignored=None):
+def parse_listing(body, *, ignored=None, observe=None):
     """Return only confirmed positive-page PDFs. A valid all-Excel page is empty."""
     items = {}
     found_rows = False
@@ -123,13 +123,6 @@ def parse_listing(body, *, ignored=None):
             extension = fmt
         if icon and icon[1].lower() != "pdf":
             extension = icon[1].lower()
-        if extension:
-            if ignored is not None and rid not in ignored:
-                ignore_non_pdf(ignored, rid, extension)
-            continue
-        pages = re.search(r"页数\s*[：:]\s*(\d+)", labels)
-        if not icon or not pages or int(pages[1]) < 1:
-            continue
         try:
             day = datetime.strptime(title.rsplit("-", 1)[-1], "%y%m%d").date()
         except ValueError:
@@ -139,6 +132,15 @@ def parse_listing(body, *, ignored=None):
             upload_day = datetime.strptime(uploaded[1], "%Y%m%d").date() if uploaded else None
         except ValueError:
             upload_day = None
+        if observe is not None:
+            observe(rid, title, day, upload_day, extension)
+        if extension:
+            if ignored is not None and rid not in ignored:
+                ignore_non_pdf(ignored, rid, extension)
+            continue
+        pages = re.search(r"页数\s*[：:]\s*(\d+)", labels)
+        if not icon or not pages or int(pages[1]) < 1:
+            continue
         items[rid] = (title, day, upload_day, int(pages[1]))
     if not found_rows:
         raise ValueError("NXNY list unavailable or structure changed")
@@ -302,15 +304,20 @@ def name_for(title):
     return name[:80]
 
 
-def recover_history(drive, cutoff, today, skip_ids, published, limit, *, failures=None):
-    from googleapiclient.errors import HttpError
+def historical_catalog(drive):
     files = drive.files()
     index = files.list(q="trashed=false and name='研报完整目录.json' and mimeType='application/json'",
                        fields="files(id),nextPageToken", pageSize=2).execute(num_retries=2)
     rows = index.get("files", [])
     if len(rows) != 1 or index.get("nextPageToken"):
         raise ValueError("Historical Drive catalog missing or ambiguous")
-    catalog = json.loads(files.get_media(fileId=rows[0]["id"]).execute(num_retries=2))
+    return json.loads(files.get_media(fileId=rows[0]["id"]).execute(num_retries=2))
+
+
+def recover_history(drive, cutoff, today, skip_ids, published, limit, *, failures=None):
+    from googleapiclient.errors import HttpError
+    files = drive.files()
+    catalog = historical_catalog(drive)
     count = 0
     for report in catalog["reports"]:
         title, rid = re.sub(r"\.pdf$", "", report.get("title", ""), flags=re.I), str(report.get("report_id") or "")
@@ -548,10 +555,10 @@ def fetch(drive, folder, *, archive_only=False, drive_only=False):
     return 0
 
 
-def backup(drive, folder):
+def backup(drive, folder, paths=None):
     from googleapiclient.http import MediaFileUpload
     existing = {r.get("appProperties",{}).get("sha256"):r for r in list_pdfs(drive,folder)}
-    for path in sorted(INBOX.glob("*.pdf")):
+    for path in sorted(INBOX.glob("*.pdf") if paths is None else paths):
         raw = valid(path.read_bytes())
         sha = hashlib.sha256(raw).hexdigest()
         md5 = hashlib.md5(raw).hexdigest()
