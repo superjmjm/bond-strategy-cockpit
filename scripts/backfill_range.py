@@ -9,6 +9,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import report_io as io
 from report_scope import BROKERS, covered_broker, weekly_broker
@@ -57,12 +59,19 @@ def archive_rows(drive):
 
 
 def scan_channel(channel, start, end, brokers, ignored, rows, hits, skipped):
+    retry = Retry(total=3, backoff_factor=1, allowed_methods={"GET"}, status_forcelist=(429, 502, 503, 504))
+    with requests.Session() as session:
+        session.mount("https://", HTTPAdapter(max_retries=retry))
+        return scan_pages(session, channel, start, end, brokers, ignored, rows, hits, skipped)
+
+
+def scan_pages(session, channel, start, end, brokers, ignored, rows, hits, skipped):
     page = 1
     fingerprints = set()
     while True:
         suffix = "" if page == 1 else f"_p{page}"
         url = f"{io.LIST_BASE}/stype_{channel}{suffix}/"
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=45)
+        response = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=45)
         response.raise_for_status()
         body = response.content.decode("utf8")
         uploads = []
